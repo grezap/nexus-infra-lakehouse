@@ -1,0 +1,14 @@
+---
+# lakehouse_minio role defaults
+lakehouse_minio_version: "RELEASE.latest-stable"
+lakehouse_minio_download_url: "https://dl.min.io/server/minio/release/linux-amd64/minio"
+lakehouse_mc_download_url: "https://dl.min.io/client/mc/release/linux-amd64/mc"
+
+lakehouse_minio_user: minio
+lakehouse_minio_group: minio
+lakehouse_minio_home: /var/lib/minio
+lakehouse_minio_identity_dir: /etc/nexus-minio
+lakehouse_minio_certs_dir: /etc/nexus-minio/certs
+lakehouse_minio_data_dir: /mnt/minio/data
+lakehouse_minio_data_disk: /dev/sdb
+lakehouse_minio_data_label: minio-data

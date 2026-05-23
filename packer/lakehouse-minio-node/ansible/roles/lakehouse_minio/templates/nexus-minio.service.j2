@@ -1,0 +1,35 @@
+[Unit]
+Description=Nexus MinIO (S3-compatible object storage, distributed erasure-coded)
+Documentation=https://min.io/docs/minio/linux/index.html
+After=network-online.target lakehouse-node-firstboot.service
+Wants=network-online.target
+Requires=lakehouse-node-firstboot.service
+AssertFileIsExecutable=/usr/local/bin/minio
+# Delivered DISABLED by the lakehouse_minio Packer role.
+# role-overlay-minio-config.tf renders /etc/nexus-minio/minio.conf
+# (MINIO_VOLUMES across the 4 backplane IPs, MINIO_ROOT_USER/PASSWORD from
+# Vault KV, MINIO_OPTS with the TLS certs dir), then enables this unit on all
+# 4 nodes together so they form the erasure set.
+ConditionPathExists={{ lakehouse_minio_identity_dir }}/minio.conf
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory={{ lakehouse_minio_home }}
+User={{ lakehouse_minio_user }}
+Group={{ lakehouse_minio_group }}
+EnvironmentFile=-{{ lakehouse_minio_identity_dir }}/minio.conf
+EnvironmentFile=-{{ lakehouse_minio_identity_dir }}/node-identity.env
+ExecStartPre=/bin/bash -c "if [ -z \"${MINIO_VOLUMES}\" ]; then echo 'MINIO_VOLUMES not set in {{ lakehouse_minio_identity_dir }}/minio.conf'; exit 1; fi"
+ExecStart=/usr/local/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+TasksMax=infinity
+TimeoutStopSec=30
+SendSIGKILL=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

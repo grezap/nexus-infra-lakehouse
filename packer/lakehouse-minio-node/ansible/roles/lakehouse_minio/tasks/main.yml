@@ -1,0 +1,120 @@
+---
+# lakehouse_minio role -- install the MinIO server + mc client (single Go
+# binaries), format the dedicated data disk (xfs, label minio-data), create the
+# minio account + per-node dirs, and deliver the systemd unit DISABLED (the
+# Terraform overlays render /etc/nexus-minio/minio.conf with the distributed
+# MINIO_VOLUMES + Vault-KV root creds + TLS certs, then enable + start all 4
+# nodes together so they form the erasure set).
+
+# ─── MinIO system account ────────────────────────────────────────────────
+- name: Create minio group
+  ansible.builtin.group:
+    name: "{{ lakehouse_minio_group }}"
+    system: true
+
+- name: Create minio user
+  ansible.builtin.user:
+    name: "{{ lakehouse_minio_user }}"
+    group: "{{ lakehouse_minio_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ lakehouse_minio_home }}"
+    create_home: true
+
+# ─── MinIO server + mc client binaries ───────────────────────────────────
+- name: Download MinIO server binary
+  ansible.builtin.get_url:
+    url: "{{ lakehouse_minio_download_url }}"
+    dest: /usr/local/bin/minio
+    owner: root
+    group: root
+    mode: "0755"
+    timeout: 600
+
+- name: Download mc client binary
+  ansible.builtin.get_url:
+    url: "{{ lakehouse_mc_download_url }}"
+    dest: /usr/local/bin/mc
+    owner: root
+    group: root
+    mode: "0755"
+    timeout: 600
+
+# ─── Dedicated data disk (xfs, label minio-data) ─────────────────────────
+# MinIO erasure coding wants a dedicated drive, not the root filesystem. The
+# template attaches a 2nd VMDK (disk_additional_size); preseed pins /dev/sda
+# as root so the data disk is /dev/sdb. Mounted by LABEL so device reordering
+# (and full-clone copies that share the xfs superblock) stay robust.
+- name: Probe existing filesystem on the data disk
+  ansible.builtin.command: "blkid -s TYPE -o value {{ lakehouse_minio_data_disk }}"
+  register: minio_data_fstype
+  failed_when: false
+  changed_when: false
+
+- name: Format the data disk as xfs (label minio-data)
+  ansible.builtin.command: "mkfs.xfs -L {{ lakehouse_minio_data_label }} {{ lakehouse_minio_data_disk }}"
+  when: minio_data_fstype.stdout | trim == ""
+
+- name: Create the MinIO data mount point
+  ansible.builtin.file:
+    path: "{{ lakehouse_minio_data_dir }}"
+    state: directory
+    owner: "{{ lakehouse_minio_user }}"
+    group: "{{ lakehouse_minio_group }}"
+    mode: "0750"
+
+- name: Add fstab entry for the MinIO data disk (by LABEL, nofail)
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '\s{{ lakehouse_minio_data_dir }}\s'
+    line: "LABEL={{ lakehouse_minio_data_label }} {{ lakehouse_minio_data_dir }} xfs defaults,noatime,nofail 0 0"
+
+- name: Mount the MinIO data disk
+  ansible.builtin.shell: "mountpoint -q {{ lakehouse_minio_data_dir }} || mount {{ lakehouse_minio_data_dir }}"
+  changed_when: false
+
+- name: Ensure data dir ownership after mount
+  ansible.builtin.file:
+    path: "{{ lakehouse_minio_data_dir }}"
+    state: directory
+    owner: "{{ lakehouse_minio_user }}"
+    group: "{{ lakehouse_minio_group }}"
+    mode: "0750"
+
+# ─── Per-node dirs (identity + TLS) ──────────────────────────────────────
+- name: Create per-node MinIO directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ lakehouse_minio_identity_dir }}", owner: root, group: "{{ lakehouse_minio_group }}", mode: "0750" }
+    - { path: "{{ lakehouse_minio_certs_dir }}", owner: root, group: "{{ lakehouse_minio_group }}", mode: "0750" }
+    - { path: "{{ lakehouse_minio_certs_dir }}/CAs", owner: root, group: "{{ lakehouse_minio_group }}", mode: "0750" }
+
+# ─── nexus-minio.service (DISABLED at bake) ──────────────────────────────
+- name: Install nexus-minio.service systemd unit
+  ansible.builtin.template:
+    src: nexus-minio.service.j2
+    dest: /etc/systemd/system/nexus-minio.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Ensure nexus-minio.service is disabled at bake
+  ansible.builtin.systemd:
+    name: nexus-minio.service
+    enabled: false
+    daemon_reload: true
+
+# ─── Verify ──────────────────────────────────────────────────────────────
+- name: Verify MinIO binary present
+  ansible.builtin.command: "/usr/local/bin/minio --version"
+  changed_when: false
+
+- name: Show MinIO install summary
+  ansible.builtin.debug:
+    msg: "MinIO server + mc installed; data disk {{ lakehouse_minio_data_disk }} -> {{ lakehouse_minio_data_dir }} (xfs); service DISABLED until overlay apply"

@@ -1,0 +1,24 @@
+---
+# lakehouse-minio-node -- Ansible playbook (local, Packer ansible-local).
+# Per-engine template: installs the MinIO server + mc client + dedicated data
+# disk. The other lakehouse engines live in sibling templates.
+
+- name: Configure lakehouse-minio-node template (Phase 0.L.1)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    target_user: "{{ target_user | default('nexusadmin') }}"
+    lakehouse_minio_version: "{{ lakehouse_minio_version | default('RELEASE.latest-stable') }}"
+    lakehouse_minio_download_url: "{{ lakehouse_minio_download_url | default('https://dl.min.io/server/minio/release/linux-amd64/minio') }}"
+    lakehouse_mc_download_url: "{{ lakehouse_mc_download_url | default('https://dl.min.io/client/mc/release/linux-amd64/mc') }}"
+
+  roles:
+    - nexus_identity
+    - nexus_network
+    - nexus_firewall
+    - nexus_observability
+    - lakehouse_firstboot
+    - lakehouse_minio

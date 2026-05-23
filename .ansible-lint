@@ -1,0 +1,23 @@
+# ansible-lint config for nexus-infra-analytics.
+#
+# The analytics per-engine Packer roles share tier-level host config under a
+# single `analytics_*` namespace (e.g. analytics_ch_user, analytics_keeper_
+# config_dir, analytics_sr_home, analytics_starrocks_version) rather than
+# duplicating it per role with the full role-name prefix. The `analytics_*`
+# prefix IS the namespace; it just spans the role boundary by design -- the
+# same convention nexus-infra-oltp uses with `oltp_node_*`.
+#
+# var-naming[no-role-prefix] enforces the opposite pattern (every var inside a
+# role must be prefixed with that role's exact name, e.g.
+# analytics_clickhouse_keeper_*). That's the right rule for general-purpose
+# reusable roles published to Galaxy -- the wrong rule for internal Packer
+# per-tier roles sharing a tier namespace. Disabling it here.
+
+skip_list:
+  - var-naming[no-role-prefix]
+  # yaml[line-length]: these per-engine roles carry long vendor URLs (e.g. the
+  # OS-suffixed StarRocks release tarball) + long explanatory defaults past 160
+  # chars. Wrapping Jinja `default(...)` scalars hurts readability more than the
+  # lint helps for an internal Packer repo. Disabled (matches the lenient posture
+  # of var-naming above).
+  - yaml[line-length]

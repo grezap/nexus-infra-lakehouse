@@ -1,0 +1,36 @@
+---
+# lakehouse_firstboot -- shared role that installs the lakehouse-tier firstboot
+# script + systemd unit on any per-engine template (lakehouse-minio-node,
+# lakehouse-spark-node, lakehouse-iceberg-rest-node, lakehouse-iceberg-pg-node).
+#
+# Ported from nexus-infra-analytics's analytics_firstboot at Phase 0.L scaffold.
+# The firstboot script (files/lakehouse-node-firstboot.sh) is role-agnostic: it
+# does NIC discovery + IP->hostname mapping across ALL lakehouse-tier IPs
+# (MinIO .141-.144, Spark .140/.145/.146, Iceberg REST .147-.148, Iceberg PG
+# .149-.150) and self-selects the role from its own DHCP IP. Inert IPs on a
+# given clone just don't match + get skipped.
+#
+# The systemd unit gates on the firstboot done-marker so the script runs exactly
+# once per clone.
+
+- name: Install lakehouse-node-firstboot.sh
+  ansible.builtin.copy:
+    src: lakehouse-node-firstboot.sh
+    dest: /usr/local/sbin/lakehouse-node-firstboot.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install lakehouse-node-firstboot.service systemd unit
+  ansible.builtin.template:
+    src: lakehouse-node-firstboot.service.j2
+    dest: /etc/systemd/system/lakehouse-node-firstboot.service
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable lakehouse-node-firstboot.service (runs once on first clone boot)
+  ansible.builtin.systemd:
+    name: lakehouse-node-firstboot.service
+    enabled: true
+    daemon_reload: true
