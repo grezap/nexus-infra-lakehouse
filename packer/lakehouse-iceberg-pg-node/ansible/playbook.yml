@@ -1,0 +1,22 @@
+---
+# lakehouse-iceberg-pg-node -- Ansible playbook (local, Packer ansible-local).
+# Per-engine template: PostgreSQL 17 (PGDG) + keepalived for the Iceberg catalog
+# metadata store (master-replica HA).
+
+- name: Configure lakehouse-iceberg-pg-node template (Phase 0.L.2)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    target_user: "{{ target_user | default('nexusadmin') }}"
+    lakehouse_pg_version: "{{ lakehouse_pg_version | default(17) }}"
+
+  roles:
+    - nexus_identity
+    - nexus_network
+    - nexus_firewall
+    - nexus_observability
+    - lakehouse_firstboot
+    - lakehouse_iceberg_pg

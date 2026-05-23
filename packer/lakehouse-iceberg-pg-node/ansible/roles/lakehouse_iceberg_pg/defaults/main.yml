@@ -1,0 +1,6 @@
+---
+# lakehouse_iceberg_pg role defaults
+lakehouse_pg_version: 17
+lakehouse_pg_user: postgres
+lakehouse_pg_group: postgres
+lakehouse_pg_identity_dir: /etc/nexus-iceberg-pg

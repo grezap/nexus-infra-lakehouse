@@ -1,0 +1,27 @@
+[Unit]
+Description=Nexus Project Nessie (Iceberg REST catalog server)
+Documentation=https://projectnessie.org/
+After=network-online.target lakehouse-node-firstboot.service
+Wants=network-online.target
+Requires=lakehouse-node-firstboot.service
+# Delivered DISABLED by the lakehouse_iceberg_rest Packer role.
+# role-overlay-nessie-config.tf renders {{ lakehouse_nessie_identity_dir }}/nessie.env
+# (JDBC datasource -> iceberg-db.nexus.lab; S3 warehouse -> minio.nexus.lab;
+# Quarkus HTTPS via the per-host Vault PKI cert) then enables this unit.
+ConditionPathExists={{ lakehouse_nessie_identity_dir }}/nessie.env
+
+[Service]
+Type=simple
+User={{ lakehouse_nessie_user }}
+Group={{ lakehouse_nessie_group }}
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+EnvironmentFile=-{{ lakehouse_nessie_identity_dir }}/nessie.env
+ExecStart=/usr/lib/jvm/java-21-openjdk-amd64/bin/java -jar {{ lakehouse_nessie_home }}/nessie-quarkus-runner.jar
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

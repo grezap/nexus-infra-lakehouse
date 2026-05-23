@@ -1,0 +1,10 @@
+---
+# lakehouse_iceberg_rest role defaults
+lakehouse_nessie_version: "0.107.5"
+lakehouse_nessie_download_url: "https://github.com/projectnessie/nessie/releases/download/nessie-0.107.5/nessie-quarkus-0.107.5-runner.jar"
+lakehouse_jdk_package: "openjdk-21-jre-headless"
+
+lakehouse_nessie_user: nessie
+lakehouse_nessie_group: iceberg
+lakehouse_nessie_home: /opt/nessie
+lakehouse_nessie_identity_dir: /etc/nexus-iceberg-rest

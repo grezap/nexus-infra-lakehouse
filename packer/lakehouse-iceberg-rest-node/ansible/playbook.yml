@@ -1,0 +1,23 @@
+---
+# lakehouse-iceberg-rest-node -- Ansible playbook (local, Packer ansible-local).
+# Per-engine template: JDK 21 + Project Nessie (Iceberg REST catalog server).
+
+- name: Configure lakehouse-iceberg-rest-node template (Phase 0.L.2)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    target_user: "{{ target_user | default('nexusadmin') }}"
+    lakehouse_nessie_version: "{{ lakehouse_nessie_version | default('0.107.5') }}"
+    lakehouse_nessie_download_url: "{{ lakehouse_nessie_download_url | default('https://github.com/projectnessie/nessie/releases/download/nessie-0.107.5/nessie-quarkus-0.107.5-runner.jar') }}"
+    lakehouse_jdk_package: "{{ lakehouse_jdk_package | default('openjdk-21-jre-headless') }}"
+
+  roles:
+    - nexus_identity
+    - nexus_network
+    - nexus_firewall
+    - nexus_observability
+    - lakehouse_firstboot
+    - lakehouse_iceberg_rest

@@ -4,8 +4,9 @@ The from-absolute-zero rebuild guide for the lakehouse tier (`08-spark`), Phase
 0.L. Canon, not informal. An operator (or future-Greg after a break) can rebuild
 this tier with no external knowledge from this document.
 
-> Coverage: **0.L.1 (MinIO) — complete + cold-rebuild proven.** §1.2/§1.3 (Iceberg
-> REST + dedicated PG HA) and §1.4 (Spark) are added as those sub-phases land.
+> Coverage: **0.L.1 (MinIO) + 0.L.2 (Iceberg REST catalog + dedicated PG HA) —
+> complete + cold-rebuild proven.** §1.13 (Spark, 0.L.3) is added as that sub-phase
+> lands.
 
 ---
 
@@ -27,14 +28,26 @@ key configured for bare `ssh nexusadmin@<ip>` (see nexus-infra-vmware handbook �
 **Cross-repo state this tier reads (provisioned by `nexus-infra-vmware`):**
 
 - **foundation env** — dhcp-host reservations for the 11 lakehouse MACs
-  (`:99`–`:A3` → `.140`–`.150`) + round-robin DNS `minio.nexus.lab`
-  (`role-overlay-gateway-lakehouse-{reservations,dns}.tf`).
-- **security env** — `minio-server` PKI role + 4 per-host AppRole sidecars at
-  `$HOME/.nexus/vault-agent-lakehouse-minio-minio-{1..4}.json` + KV sticky-seeds
-  at `nexus/lakehouse/minio/{root-user,root-password,app-access-key,app-secret-key}`
+  (`:99`–`:A3` → `.140`–`.150`) + the catalog VIP (`:A?` → `.151`) + round-robin
+  DNS `minio.nexus.lab`, `iceberg.nexus.lab` (→ `.147`/`.148`), and
+  `iceberg-db.nexus.lab` (→ VIP `.151`) —
+  `role-overlay-gateway-lakehouse-{reservations,dns}.tf`.
+- **security env (MinIO, 0.L.1)** — `minio-server` PKI role + 4 per-host AppRole
+  sidecars at `$HOME/.nexus/vault-agent-lakehouse-minio-minio-{1..4}.json` + KV
+  sticky-seeds at
+  `nexus/lakehouse/minio/{root-user,root-password,app-access-key,app-secret-key}`
   (field `value`) — `role-overlay-vault-pki-minio.tf`,
   `role-overlay-vault-agent-minio-{policies,approles}.tf`,
   `role-overlay-vault-minio-creds-seed.tf`.
+- **security env (Iceberg, 0.L.2)** — `iceberg-server` PKI role + 4 per-host
+  AppRole sidecars at
+  `$HOME/.nexus/vault-agent-lakehouse-iceberg-iceberg-{pg-1,pg-2,rest-1,rest-2}.json`
+  + KV sticky-seeds at `nexus/lakehouse/iceberg/{pg-superuser-password,
+  pg-replication-password,nessie-db-password}` (field `value`) —
+  `role-overlay-vault-pki-iceberg.tf`,
+  `role-overlay-vault-agent-iceberg-{policies,approles}.tf`,
+  `role-overlay-vault-iceberg-creds-seed.tf`. The Nessie S3 client reuses the
+  MinIO `app-access-key`/`app-secret-key` KV seeds (0.L.1).
 
 **Build-host cache:** `H:/VMS/ISO/debian-13.5.0-amd64-netinst.iso` (sha256
 `95838884…`). MinIO + mc binaries pull from `dl.min.io` during bake (NAT egress).
@@ -128,6 +141,103 @@ Survives teardown: the gateway reservations/DNS, the Vault PKI role + AppRoles +
 KV creds (sticky), the built template. A subsequent `apply` re-clones from zero
 and reuses the same KV creds — no KV wipe needed (the data disks are fresh xfs).
 
+### §1.7 Build the Iceberg templates (0.L.2)
+
+Two engines → two templates ([feedback_per_cluster_state_per_engine_template]):
+
+```powershell
+cd packer\lakehouse-iceberg-pg-node
+packer init .; packer build -var "iso_url=H:/VMS/ISO/debian-13.5.0-amd64-netinst.iso" .
+# → _templates/lakehouse-iceberg-pg-node — PostgreSQL 17 (PGDG) + keepalived;
+#   both services delivered DISABLED. (libicu/libldap pulled with a bookworm
+#   fallback when trixie lags PGDG.)
+
+cd ..\lakehouse-iceberg-rest-node
+packer init .; packer build -var "iso_url=H:/VMS/ISO/debian-13.5.0-amd64-netinst.iso" .
+# → _templates/lakehouse-iceberg-rest-node — JDK21 + Project Nessie 0.107.5
+#   uber-jar at /opt/nessie/nessie-quarkus-runner.jar (/opt/nessie is 0755 so
+#   nexusadmin can traverse it — see §3.4 #1); nexus-nessie.service DISABLED.
+```
+
+### §1.8 Cross-env operator order (run FIRST, in nexus-infra-vmware)
+
+```powershell
+# in nexus-infra-vmware (idempotent — only the new iceberg null_resources apply)
+pwsh -File scripts\foundation.ps1 apply   # iceberg.nexus.lab → .147/.148 + iceberg-db.nexus.lab → VIP .151
+pwsh -File scripts\security.ps1   apply   # iceberg-server PKI + 4 AppRole sidecars + KV seeds nexus/lakehouse/iceberg/*
+```
+
+### §1.9 Apply the Iceberg cluster
+
+```powershell
+# in nexus-infra-lakehouse — MinIO (0.L.1) MUST be up (the s3://warehouse)
+pwsh -File scripts\lakehouse-iceberg.ps1 apply
+```
+
+Apply graph (per `terraform/envs/lakehouse-iceberg/main.tf`):
+1. `module.iceberg_pg_1/2` + `module.iceberg_rest_1/2` — clone → dual-NIC → power
+   on; baked firstboot self-selects hostname/role/backplane-IP (and emits
+   `NEXUS_PG_ROLE=primary|replica` for the PG pair).
+2. `null_resource.iceberg_nftables_backplane` — per-cluster nftables + `nft -f`.
+3. `null_resource.iceberg_vault_agent` (×4) — Vault Agent install + AppRole auth.
+4. `null_resource.iceberg_tls` (×4) — PKI templates → PG `server.{crt,key}`+`ca.crt`
+   / REST `cert.pem`+`key.pem`+`ca.crt`; SANs carry `iceberg-db.nexus.lab` (PG VIP)
+   and `iceberg.nexus.lab` (REST round-robin).
+5. `null_resource.iceberg_pg_replication` — **connect ethernet1** → PRIMARY
+   conf.d/pg_hba/roles + `nessie` DB → REPLICA `pg_basebackup -R` hot standby →
+   keepalived (VRRP VIP `.151`, BACKUP+nopreempt, promote hook) → verify
+   `pg_stat_replication` + VIP bound.
+6. `null_resource.nessie_config` — import Vault CA into the JVM truststore →
+   render `nessie.env` (JDBC2 named-`postgresql` datasource → VIP `.151`) +
+   `nessie.properties` (S3 urn-secret) → start both Nessie → health on `:9000`.
+7. `null_resource.iceberg_catalog_bootstrap` — **exit gate**: Iceberg REST
+   `/v1/config` + Nessie `/api/v2/config` + namespace round-trip (hard);
+   table-create + MinIO warehouse verify (best-effort).
+
+Wall-clock ~12-18 min (4 clones + firstboot + basebackup + overlays).
+
+### §1.10 Verify the exit gate (0.L.2)
+
+```powershell
+pwsh -File scripts\smoke-0.L.2.ps1
+# expect: "ALL 0.L.2 SMOKE CHECKS PASSED" (28 checks): reachability, firstboot,
+# identity (incl. NEXUS_PG_ROLE==primary), Vault Agent, mTLS SANs, nftables,
+# PG streaming replication, VRRP VIP bound on exactly one node, 2× Nessie health
+# (mgmt :9000), Iceberg REST /v1/config + Nessie /api/v2/config == 200,
+# round-robin + VIP DNS, namespace round-trip.
+```
+
+Manual spot-checks: on iceberg-pg-1
+`sudo -u postgres psql -tAc 'SELECT count(*) FROM pg_stat_replication'` (= 1);
+`ip -4 -o addr show nic0 | grep 192.168.70.151` (VIP on the primary);
+`dig +short iceberg.nexus.lab @192.168.70.1` (2 IPs).
+
+### §1.11 Iterating (selective ops, 0.L.2)
+
+```powershell
+# re-run only the Nessie config overlay (after a property change):
+pwsh -File scripts\lakehouse-iceberg.ps1 apply -Vars "enable_iceberg_pg_replication=false,enable_iceberg_catalog_bootstrap=false"
+# bring up only the PG pair (no Nessie):
+pwsh -File scripts\lakehouse-iceberg.ps1 apply -Vars "enable_nessie_config=false,enable_iceberg_catalog_bootstrap=false"
+# skip the exit-gate bootstrap (cluster bring-up only):
+pwsh -File scripts\lakehouse-iceberg.ps1 apply -Vars "enable_iceberg_catalog_bootstrap=false"
+```
+
+> **Trap** ([feedback_terraform_partial_apply_destroys_resources]): every `-Vars`
+> override is the *full* set — vars you don't pass revert to their `true`
+> defaults. To pin one overlay off, pass *only* that `false`.
+
+### §1.12 Tear down (0.L.2)
+
+```powershell
+pwsh -File scripts\lakehouse-iceberg.ps1 destroy   # removes the 4 iceberg VMs + overlay state
+```
+
+Survives teardown: gateway reservations/DNS, the `iceberg-server` PKI role +
+AppRoles + KV creds (sticky), both templates. A subsequent `apply` re-clones from
+zero, rebuilds the replica via fresh `pg_basebackup`, and recreates the `nessie`
+DB — the catalog metadata is rebuilt by the bootstrap namespace round-trip.
+
 ---
 
 ## §2 Phase status
@@ -135,7 +245,7 @@ and reuses the same KV creds — no KV wipe needed (the data disks are fresh xfs
 | Sub-phase | Cluster | Closed | Smoke |
 |---|---|---|---|
 | 0.L.1 | MinIO distributed EC (4 nodes) | 2026-05-23 (live-ratified + cold-rebuild proven) | `smoke-0.L.1.ps1` 41/41 |
-| 0.L.2 | Iceberg REST + dedicated PG HA | pending | — |
+| 0.L.2 | Iceberg REST (Nessie ×2) + dedicated PG HA (master-replica + VRRP VIP) | 2026-05-24 (live-ratified + cold-rebuild proven) | `smoke-0.L.2.ps1` 28/28 |
 | 0.L.3 | Apache Spark | pending | — |
 
 ---
@@ -159,3 +269,29 @@ pwsh -File scripts\lakehouse-minio.ps1 cycle   # destroy → apply → smoke
 |---|---|---|---|
 | 1 | `packer build` → `Timeout waiting for SSH` after 30 min; install never finishes | The dedicated 2nd data VMDK makes Debian `partman` stall on the multi-disk layout / the post-install reboot tries the blank disk | Preseed `partman/early_command` pins `/dev/sda` + zaps `/dev/sdb`'s label; `boot_wait` 20s, `ssh_timeout` 45m. Next build: 6m35s. ([feedback_debian_preseed_multidisk_stall]) |
 | 2 | MinIO crash-loops: `grid: local host () not found in cluster setup`; `nic1 DOWN … NO-CARRIER` | VMware left `ethernet1` (VMnet10 backplane) disconnected at power-on despite `startConnected=TRUE`, so the static backplane IP never applied and MinIO can't match a local `MINIO_VOLUMES` host | `role-overlay-minio-config.tf` §0: `vmrun connectNamedDevice <vmx> ethernet1` + `systemctl restart systemd-networkd` + wait-for-backplane-IP, before rendering/starting MinIO. Zero-touch. (Same flake as analytics §3.x #9.) |
+
+### §3.3 Cold-rebuild canon — 0.L.2 (PROVEN 2026-05-24)
+
+```powershell
+# (both iceberg templates built; MinIO 0.L.1 up; cross-tier prereqs sticky)
+pwsh -File scripts\lakehouse-iceberg.ps1 cycle   # destroy → apply → smoke
+# → "ALL 0.L.2 SMOKE CHECKS PASSED" (28). The replica is rebuilt from a fresh
+#   pg_basebackup; the nessie DB + namespace are recreated by the bootstrap.
+```
+
+### §3.4 Apply-time transient chronology — 0.L.2
+
+All eight were diagnosed on the live node before any code change
+([feedback_diagnose_before_rewriting]) and are now fixed in source — the cold
+rebuild above hits none of them.
+
+| # | Symptom | Diagnosis | Recovery (now in source) |
+|---|---|---|---|
+| 1 | Nessie template post-install check fails: `nexusadmin` can't `stat /opt/nessie/nessie-quarkus-runner.jar` | `useradd` for the `nessie` system user set `HOME_MODE 0700` on `/opt/nessie`, blocking traversal | Ansible `file: path=/opt/nessie mode=0755` after the JAR lands (`lakehouse-iceberg-rest-node` role). |
+| 2 | pg-replication overlay aborts rendering the verify SQL; PG role SQL malformed | PowerShell does **not** treat `\"` as an escape inside double-quoted strings — `\` terminated the string ([feedback_powershell_backslash_quote]) | Use single-quoted SQL literals (`'SELECT count(*) FROM pg_stat_replication'`); hex KV passwords are inline-safe so no inner quoting is needed. |
+| 3 | `keepalived` refuses to start: parse error in `authentication { auth_type PASS; auth_pass … }` | keepalived's config grammar rejects semicolon-joined one-liners inside a block | Render the `authentication {}` block multi-line (one directive per line). |
+| 4 | VRRP VIP `.151` never binds; `chk_pg` permanently DOWN though `pg_isready` works at the shell | keepalived's `vrrp_script` exec context can't run the `/usr/bin/pg_isready` `pg_wrapper` perl symlink → non-zero → no node takes MASTER | Wrapper `/usr/local/sbin/nexus-pg-check.sh` → `exec /usr/lib/postgresql/17/bin/pg_isready` (the **versioned** binary). ([feedback_keepalived_check_versioned_binary]) |
+| 5 | Nessie JDBC URL renders as `jdbc:postgresql://…` with the host dropped; replica `.pgpass` host blank | `$dbHost:5432` / `$primaryBp:5432` parsed as a PowerShell scope-qualified variable ([feedback_powershell_url_scope_qualifier]) | `${dbHost}:5432` / `$${primaryBp}:5432` (the `$${}` survives the terraform heredoc). |
+| 6 | Nessie starts but `/api/v2/config` 500s; logs show the default datasource is inactive / no JDBC | Nessie bundles a **named** `postgresql` datasource shipped `active=false`; the inert default datasource was being used | `QUARKUS_DATASOURCE_POSTGRESQL_ACTIVE=true` + `NESSIE_VERSION_STORE_PERSIST_JDBC_DATASOURCE=postgresql` (select the named DS). |
+| 7 | Health poll on `https://…:19120/q/health` never 200; service is actually up | Quarkus serves `/q/health` on the **management** interface (`http :9000`), not the app port (`https :19120`) | Probe `http://localhost:9000/q/health`; smoke + apply gate both corrected. |
+| 8 | Nessie won't boot: `SRCFG00050` on the S3 access-key | The inline `…access-key.name`/`.secret` form fails Quarkus config validation | Secret-URN form: `…access-key=urn:nessie-secret:quarkus:lakehouse-s3-creds` + `lakehouse-s3-creds.name`/`.secret` in `nessie.properties` via `QUARKUS_CONFIG_LOCATIONS`. ([feedback_nessie_jdbc2_s3_quarkus]) |
