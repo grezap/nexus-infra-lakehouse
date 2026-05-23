@@ -17,8 +17,8 @@ resource "null_resource" "iceberg_catalog_bootstrap" {
   count = var.enable_iceberg_catalog_bootstrap ? 1 : 0
 
   triggers = {
-    nessie_id = length(null_resource.nessie_config) > 0 ? null_resource.nessie_config[0].id : "disabled"
-    bucket    = var.iceberg_warehouse_bucket
+    nessie_id   = length(null_resource.nessie_config) > 0 ? null_resource.nessie_config[0].id : "disabled"
+    bucket      = var.iceberg_warehouse_bucket
     bootstrap_v = "1"
   }
 

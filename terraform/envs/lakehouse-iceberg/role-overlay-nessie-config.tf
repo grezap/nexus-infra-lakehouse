@@ -18,10 +18,10 @@ resource "null_resource" "nessie_config" {
   count = var.enable_nessie_config ? 1 : 0
 
   triggers = {
-    pg_repl_id  = length(null_resource.iceberg_pg_replication) > 0 ? null_resource.iceberg_pg_replication[0].id : "disabled"
-    tls_rest    = join(",", [for k, r in null_resource.iceberg_tls : r.id if can(regex("iceberg-rest", k))])
+    pg_repl_id   = length(null_resource.iceberg_pg_replication) > 0 ? null_resource.iceberg_pg_replication[0].id : "disabled"
+    tls_rest     = join(",", [for k, r in null_resource.iceberg_tls : r.id if can(regex("iceberg-rest", k))])
     nessie_cfg_v = "1"
-    ssh_user    = var.lakehouse_node_user
+    ssh_user     = var.lakehouse_node_user
   }
 
   depends_on = [null_resource.iceberg_pg_replication, null_resource.iceberg_tls]
