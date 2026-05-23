@@ -33,10 +33,10 @@ resource "null_resource" "minio_vault_agent" {
   for_each = local.minio_vault_agent_active
 
   triggers = {
-    creds_file_path = "${local.minio_va_creds_dir_expanded}/vault-agent-lakehouse-minio-${each.key}.json"
-    creds_file_hash = filesha256("${local.minio_va_creds_dir_expanded}/vault-agent-lakehouse-minio-${each.key}.json")
-    nftables_id     = length(null_resource.minio_nftables_backplane) > 0 ? null_resource.minio_nftables_backplane[0].id : "disabled"
-    vault_version   = var.vault_agent_version
+    creds_file_path    = "${local.minio_va_creds_dir_expanded}/vault-agent-lakehouse-minio-${each.key}.json"
+    creds_file_hash    = filesha256("${local.minio_va_creds_dir_expanded}/vault-agent-lakehouse-minio-${each.key}.json")
+    nftables_id        = length(null_resource.minio_nftables_backplane) > 0 ? null_resource.minio_nftables_backplane[0].id : "disabled"
+    vault_version      = var.vault_agent_version
     minio_va_overlay_v = "1"
 
     destroy_vm_ip    = each.value.vm_ip

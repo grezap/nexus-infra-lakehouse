@@ -54,6 +54,7 @@
 - name: Format the data disk as xfs (label minio-data)
   ansible.builtin.command: "mkfs.xfs -L {{ lakehouse_minio_data_label }} {{ lakehouse_minio_data_disk }}"
   when: minio_data_fstype.stdout | trim == ""
+  changed_when: true
 
 - name: Create the MinIO data mount point
   ansible.builtin.file:

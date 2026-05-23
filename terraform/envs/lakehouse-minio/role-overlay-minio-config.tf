@@ -19,12 +19,12 @@ resource "null_resource" "minio_config" {
   count = var.enable_minio_config ? 1 : 0
 
   triggers = {
-    node_ips      = join(",", values(local.minio_all_nodes))
-    tls_ids       = join(",", [for h, r in null_resource.minio_tls : r.id])
-    kv_root_user  = var.kv_root_user_path
-    kv_root_pass  = var.kv_root_password_path
-    minio_cfg_v   = "1"
-    ssh_user      = var.lakehouse_node_user
+    node_ips     = join(",", values(local.minio_all_nodes))
+    tls_ids      = join(",", [for h, r in null_resource.minio_tls : r.id])
+    kv_root_user = var.kv_root_user_path
+    kv_root_pass = var.kv_root_password_path
+    minio_cfg_v  = "1"
+    ssh_user     = var.lakehouse_node_user
   }
 
   depends_on = [null_resource.minio_tls]

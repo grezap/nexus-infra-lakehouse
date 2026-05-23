@@ -13,7 +13,7 @@ output "minio_topology" {
         data_drive   = "/mnt/minio/data (xfs, label minio-data)"
       }
     }
-    erasure  = "MINIO_VOLUMES=https://192.168.10.{141...144}:9000/mnt/minio/data (4-drive set, default EC:2 -> tolerates 1 node down read-write, 2 nodes down read-only)"
+    erasure   = "MINIO_VOLUMES=https://192.168.10.{141...144}:9000/mnt/minio/data (4-drive set, default EC:2 -> tolerates 1 node down read-write, 2 nodes down read-only)"
     warehouse = "s3://${var.minio_warehouse_bucket} (Iceberg warehouse; consumed by 0.L.2 catalog + 0.L.3 Spark)"
   }
 }
