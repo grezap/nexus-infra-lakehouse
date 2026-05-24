@@ -1,0 +1,28 @@
+[Unit]
+Description=Nexus Apache ZooKeeper (Spark master-HA coordination quorum)
+Documentation=https://zookeeper.apache.org/
+After=network-online.target lakehouse-node-firstboot.service
+Wants=network-online.target
+Requires=lakehouse-node-firstboot.service
+# Delivered DISABLED by the lakehouse_zookeeper Packer role.
+# role-overlay-zk-ensemble.tf renders {{ lakehouse_zookeeper_identity_dir }}/zoo.cfg
+# (server.1/2/3 on the VMnet10 backplane) + {{ lakehouse_zookeeper_data_dir }}/myid
+# (from NEXUS_ZK_ID) then enables this unit.
+ConditionPathExists={{ lakehouse_zookeeper_identity_dir }}/zoo.cfg
+
+[Service]
+Type=simple
+User={{ lakehouse_zookeeper_user }}
+Group={{ lakehouse_zookeeper_group }}
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+Environment=ZOOCFGDIR={{ lakehouse_zookeeper_identity_dir }}
+Environment=ZOO_LOG_DIR={{ lakehouse_zookeeper_log_dir }}
+ExecStart={{ lakehouse_zookeeper_home }}/bin/zkServer.sh start-foreground {{ lakehouse_zookeeper_identity_dir }}/zoo.cfg
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

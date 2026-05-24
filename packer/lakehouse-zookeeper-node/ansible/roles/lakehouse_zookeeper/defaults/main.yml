@@ -1,0 +1,12 @@
+---
+# lakehouse_zookeeper role defaults
+lakehouse_zookeeper_version: "3.9.3"
+lakehouse_zookeeper_download_url: "https://archive.apache.org/dist/zookeeper/zookeeper-3.9.3/apache-zookeeper-3.9.3-bin.tar.gz"
+lakehouse_jdk_package: "openjdk-21-jre-headless"
+
+lakehouse_zookeeper_user: zookeeper
+lakehouse_zookeeper_group: zookeeper
+lakehouse_zookeeper_home: /opt/zookeeper
+lakehouse_zookeeper_data_dir: /var/lib/zookeeper
+lakehouse_zookeeper_log_dir: /var/log/zookeeper
+lakehouse_zookeeper_identity_dir: /etc/nexus-zookeeper

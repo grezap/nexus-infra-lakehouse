@@ -1,0 +1,138 @@
+---
+# lakehouse_spark role -- install JDK 21 + Apache Spark (bin-hadoop3) + the S3A
+# connector + the Iceberg Spark runtime + BOTH role systemd units (DISABLED).
+# The Terraform spark-config overlay renders spark-env.sh + spark-defaults.conf
+# (recoveryMode=ZOOKEEPER, multi-master URL, S3A->MinIO, Iceberg REST->Nessie,
+# spark.authenticate secret, UI TLS) then enables exactly ONE role unit per node.
+
+# ─── JDK ──────────────────────────────────────────────────────────────────
+- name: Install JDK for Spark
+  ansible.builtin.apt:
+    name: "{{ lakehouse_jdk_package }}"
+    state: present
+    update_cache: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+# ─── Spark system account ─────────────────────────────────────────────────
+- name: Create spark group
+  ansible.builtin.group:
+    name: "{{ lakehouse_spark_group }}"
+    system: true
+
+- name: Create spark user
+  ansible.builtin.user:
+    name: "{{ lakehouse_spark_user }}"
+    group: "{{ lakehouse_spark_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ lakehouse_spark_data_dir }}"
+    create_home: true
+
+# ─── Download + unpack Apache Spark ───────────────────────────────────────
+- name: Download Apache Spark bin-hadoop3 tarball
+  ansible.builtin.get_url:
+    url: "{{ lakehouse_spark_download_url }}"
+    dest: "/tmp/spark-{{ lakehouse_spark_version }}-bin-hadoop3.tgz"
+    mode: "0644"
+    timeout: 600
+
+- name: Create Spark install dir
+  ansible.builtin.file:
+    path: "/opt/spark-{{ lakehouse_spark_version }}-bin-hadoop3"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unpack Spark
+  ansible.builtin.unarchive:
+    src: "/tmp/spark-{{ lakehouse_spark_version }}-bin-hadoop3.tgz"
+    dest: "/opt/spark-{{ lakehouse_spark_version }}-bin-hadoop3"
+    remote_src: true
+    extra_opts: ["--strip-components=1"]
+    creates: "/opt/spark-{{ lakehouse_spark_version }}-bin-hadoop3/bin/spark-class"
+
+- name: Symlink /opt/spark -> versioned install
+  ansible.builtin.file:
+    src: "/opt/spark-{{ lakehouse_spark_version }}-bin-hadoop3"
+    dest: "{{ lakehouse_spark_home }}"
+    state: link
+
+- name: Remove the Spark tarball
+  ansible.builtin.file:
+    path: "/tmp/spark-{{ lakehouse_spark_version }}-bin-hadoop3.tgz"
+    state: absent
+
+# ─── S3A + Iceberg JARs into $SPARK_HOME/jars ─────────────────────────────
+# hadoop-aws + aws-java-sdk-bundle MUST match Spark's bundled Hadoop (3.3.4) or
+# S3A throws NoSuchMethodError. The Iceberg Spark runtime is the REST-catalog
+# client; the iceberg-aws-bundle is the AWS SDK v2 that Iceberg's S3FileIO needs
+# (the Nessie warehouse vends s3:// locations -> S3FileIO writes them; without
+# this bundle: NoClassDefFoundError software/amazon/awssdk/.../S3Exception).
+- name: Download S3A + Iceberg runtime + Iceberg AWS (SDK v2) JARs into Spark jars/
+  ansible.builtin.get_url:
+    url: "{{ item }}"
+    dest: "{{ lakehouse_spark_home }}/jars/"
+    mode: "0644"
+    timeout: 600
+  loop:
+    - "{{ lakehouse_hadoop_aws_url }}"
+    - "{{ lakehouse_aws_sdk_bundle_url }}"
+    - "{{ lakehouse_iceberg_runtime_url }}"
+    - "{{ lakehouse_iceberg_aws_bundle_url }}"
+
+# ─── Runtime dirs (work, logs, identity, TLS) ─────────────────────────────
+- name: Create Spark runtime + identity directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ lakehouse_spark_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ lakehouse_spark_data_dir }}", owner: "{{ lakehouse_spark_user }}", mode: "0750" }
+    - { path: "{{ lakehouse_spark_log_dir }}", owner: "{{ lakehouse_spark_user }}", mode: "0750" }
+    - { path: "{{ lakehouse_spark_identity_dir }}", owner: root, mode: "0750" }
+    - { path: "{{ lakehouse_spark_identity_dir }}/tls", owner: root, mode: "0750" }
+
+# ─── Role systemd units (BOTH DISABLED at bake) ──────────────────────────
+- name: Install nexus-spark-master.service systemd unit
+  ansible.builtin.template:
+    src: nexus-spark-master.service.j2
+    dest: /etc/systemd/system/nexus-spark-master.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install nexus-spark-worker.service systemd unit
+  ansible.builtin.template:
+    src: nexus-spark-worker.service.j2
+    dest: /etc/systemd/system/nexus-spark-worker.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Ensure both Spark role units are disabled at bake
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    daemon_reload: true
+  loop:
+    - nexus-spark-master.service
+    - nexus-spark-worker.service
+
+# ─── Verify ──────────────────────────────────────────────────────────────
+- name: Verify Spark + JARs + Java present
+  ansible.builtin.command: "{{ item }}"
+  changed_when: false
+  loop:
+    - "test -x {{ lakehouse_spark_home }}/bin/spark-class"
+    - "test -s {{ lakehouse_spark_home }}/jars/hadoop-aws-3.3.4.jar"
+    - "/usr/lib/jvm/java-21-openjdk-amd64/bin/java -version"
+
+- name: Show Spark install summary
+  ansible.builtin.debug:
+    msg: "Apache Spark {{ lakehouse_spark_version }} (bin-hadoop3) + Iceberg + S3A at {{ lakehouse_spark_home }}; JDK 21; both role services DISABLED until overlay apply"

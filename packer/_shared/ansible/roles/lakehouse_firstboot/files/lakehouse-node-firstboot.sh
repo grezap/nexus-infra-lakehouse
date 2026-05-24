@@ -8,7 +8,8 @@
 #
 # IP-to-role map covers ALL lakehouse-tier clusters (Phase 0.L):
 #   - MinIO:        4 nodes (.141-.144)         distributed erasure-coded object store
-#   - Spark:        1 master (.140) + 2 workers (.145-.146)
+#   - Spark:        2 masters (.140/.153, HA) + 3 workers (.145/.146/.154)
+#   - ZooKeeper:    3-node quorum (.155-.157)   coordinates Spark master HA election
 #   - Iceberg REST: 2 catalog instances (.147-.148)
 #   - Iceberg PG:   1 primary (.149) + 1 replica (.150)  dedicated catalog metadata DB
 # A clone landing on an unmapped IP fails fast with a clear error.
@@ -127,8 +128,9 @@ echo "$LOG_PREFIX nic0 (VMnet11) IP: $VMNET11_IP"
 # (the lakehouse tier shares the .14x decade across all three clusters).
 HOSTNAME=""; VMNET10_IP=""; ROLE=""; CLUSTER=""
 case "$VMNET11_IP" in
-  # ─── 0.L.3 -- Spark master ────────────────────────────────────────────
-  192.168.70.140) HOSTNAME=spark-master;   VMNET10_IP=192.168.10.140; ROLE=spark-master; CLUSTER=spark ;;
+  # ─── 0.L.3 -- Spark HA masters (2 nodes, ZK-elected) ──────────────────
+  192.168.70.140) HOSTNAME=spark-master-1; VMNET10_IP=192.168.10.140; ROLE=spark-master; CLUSTER=spark ;;
+  192.168.70.153) HOSTNAME=spark-master-2; VMNET10_IP=192.168.10.153; ROLE=spark-master; CLUSTER=spark ;;
 
   # ─── 0.L.1 -- MinIO distributed erasure-coded cluster (4 nodes) ────────
   192.168.70.141) HOSTNAME=minio-1; VMNET10_IP=192.168.10.141; ROLE=minio; CLUSTER=minio ;;
@@ -136,9 +138,10 @@ case "$VMNET11_IP" in
   192.168.70.143) HOSTNAME=minio-3; VMNET10_IP=192.168.10.143; ROLE=minio; CLUSTER=minio ;;
   192.168.70.144) HOSTNAME=minio-4; VMNET10_IP=192.168.10.144; ROLE=minio; CLUSTER=minio ;;
 
-  # ─── 0.L.3 -- Spark workers (2 nodes) ─────────────────────────────────
+  # ─── 0.L.3 -- Spark workers (3 nodes) ─────────────────────────────────
   192.168.70.145) HOSTNAME=spark-worker-1; VMNET10_IP=192.168.10.145; ROLE=spark-worker; CLUSTER=spark ;;
   192.168.70.146) HOSTNAME=spark-worker-2; VMNET10_IP=192.168.10.146; ROLE=spark-worker; CLUSTER=spark ;;
+  192.168.70.154) HOSTNAME=spark-worker-3; VMNET10_IP=192.168.10.154; ROLE=spark-worker; CLUSTER=spark ;;
 
   # ─── 0.L.2 -- Iceberg REST catalog (2 HA instances) ───────────────────
   192.168.70.147) HOSTNAME=iceberg-rest-1; VMNET10_IP=192.168.10.147; ROLE=iceberg-rest; CLUSTER=iceberg ;;
@@ -148,9 +151,14 @@ case "$VMNET11_IP" in
   192.168.70.149) HOSTNAME=iceberg-pg-1; VMNET10_IP=192.168.10.149; ROLE=iceberg-pg; CLUSTER=iceberg ;;
   192.168.70.150) HOSTNAME=iceberg-pg-2; VMNET10_IP=192.168.10.150; ROLE=iceberg-pg; CLUSTER=iceberg ;;
 
+  # ─── 0.L.3 -- ZooKeeper quorum (3 nodes, Spark master-HA coordination) ─
+  192.168.70.155) HOSTNAME=zookeeper-1; VMNET10_IP=192.168.10.155; ROLE=zookeeper; CLUSTER=spark ;;
+  192.168.70.156) HOSTNAME=zookeeper-2; VMNET10_IP=192.168.10.156; ROLE=zookeeper; CLUSTER=spark ;;
+  192.168.70.157) HOSTNAME=zookeeper-3; VMNET10_IP=192.168.10.157; ROLE=zookeeper; CLUSTER=spark ;;
+
   *)
     echo "$LOG_PREFIX ERROR: unknown VMnet11 IP '$VMNET11_IP' -- not an 08-spark lakehouse tier IP" >&2
-    echo "$LOG_PREFIX recognised IPs: spark-master (.140); minio-1..4 (.141-.144); spark-worker-1..2 (.145/.146); iceberg-rest-1..2 (.147/.148); iceberg-pg-1..2 (.149/.150)." >&2
+    echo "$LOG_PREFIX recognised IPs: spark-master-1/2 (.140/.153); minio-1..4 (.141-.144); spark-worker-1..3 (.145/.146/.154); iceberg-rest-1..2 (.147/.148); iceberg-pg-1..2 (.149/.150); zookeeper-1..3 (.155-.157)." >&2
     exit 1
     ;;
 esac
@@ -160,11 +168,12 @@ echo "$LOG_PREFIX mapped: hostname=$HOSTNAME role=$ROLE cluster=$CLUSTER VMnet10
 # the role's Packer task (minio for MinIO; spark for Spark; iceberg for the
 # REST catalog; postgres for the catalog PG).
 case "$ROLE" in
-  minio)        IDENTITY_DIR=/etc/nexus-minio;        IDENTITY_GROUP=minio    ;;
-  spark-master) IDENTITY_DIR=/etc/nexus-spark;        IDENTITY_GROUP=spark    ;;
-  spark-worker) IDENTITY_DIR=/etc/nexus-spark;        IDENTITY_GROUP=spark    ;;
-  iceberg-rest) IDENTITY_DIR=/etc/nexus-iceberg-rest; IDENTITY_GROUP=iceberg  ;;
-  iceberg-pg)   IDENTITY_DIR=/etc/nexus-iceberg-pg;   IDENTITY_GROUP=postgres ;;
+  minio)        IDENTITY_DIR=/etc/nexus-minio;        IDENTITY_GROUP=minio     ;;
+  spark-master) IDENTITY_DIR=/etc/nexus-spark;        IDENTITY_GROUP=spark     ;;
+  spark-worker) IDENTITY_DIR=/etc/nexus-spark;        IDENTITY_GROUP=spark     ;;
+  zookeeper)    IDENTITY_DIR=/etc/nexus-zookeeper;    IDENTITY_GROUP=zookeeper ;;
+  iceberg-rest) IDENTITY_DIR=/etc/nexus-iceberg-rest; IDENTITY_GROUP=iceberg   ;;
+  iceberg-pg)   IDENTITY_DIR=/etc/nexus-iceberg-pg;   IDENTITY_GROUP=postgres  ;;
   *)
     echo "$LOG_PREFIX ERROR: unknown ROLE '$ROLE' -- no identity dir mapping" >&2
     exit 1
@@ -186,6 +195,22 @@ if [ "$ROLE" = "iceberg-pg" ]; then
       ;;
   esac
   echo "$LOG_PREFIX iceberg catalog PG role: $PG_ROLE"
+fi
+
+# For ZooKeeper nodes, derive the ensemble member id from the hostname
+# (zookeeper-N -> myid N) so the ensemble overlay can write /var/lib/zookeeper/myid
+# without per-node config.
+ZK_ID=""
+if [ "$ROLE" = "zookeeper" ]; then
+  ZK_ID="${HOSTNAME##*-}"
+  case "$ZK_ID" in
+    1|2|3) ;;
+    *)
+      echo "$LOG_PREFIX ERROR: could not derive ZooKeeper id from hostname '$HOSTNAME'" >&2
+      exit 1
+      ;;
+  esac
+  echo "$LOG_PREFIX ZooKeeper ensemble id: $ZK_ID"
 fi
 
 # ─── 5. Hostname + /etc/hosts ──────────────────────────────────────────────
@@ -258,6 +283,9 @@ mkdir -p "$IDENTITY_DIR"
   echo "NEXUS_VMNET10_IP=$VMNET10_IP"
   if [ "$ROLE" = "iceberg-pg" ]; then
     echo "NEXUS_PG_ROLE=$PG_ROLE"
+  fi
+  if [ "$ROLE" = "zookeeper" ]; then
+    echo "NEXUS_ZK_ID=$ZK_ID"
   fi
 } > "$IDENTITY_FILE"
 chown "root:$IDENTITY_GROUP" "$IDENTITY_FILE"

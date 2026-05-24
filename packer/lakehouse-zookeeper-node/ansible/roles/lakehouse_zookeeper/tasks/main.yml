@@ -1,0 +1,117 @@
+---
+# lakehouse_zookeeper role -- install JDK 21 + Apache ZooKeeper + the
+# nexus-zookeeper.service unit (DISABLED). The Terraform zk-ensemble overlay
+# renders /etc/nexus-zookeeper/zoo.cfg (server.1/2/3 on backplane IPs) +
+# /var/lib/zookeeper/myid (from NEXUS_ZK_ID), then enables + starts all three.
+
+# ─── JDK ──────────────────────────────────────────────────────────────────
+- name: Install JDK for ZooKeeper
+  ansible.builtin.apt:
+    name: "{{ lakehouse_jdk_package }}"
+    state: present
+    update_cache: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+# ─── ZooKeeper system account ─────────────────────────────────────────────
+- name: Create zookeeper group
+  ansible.builtin.group:
+    name: "{{ lakehouse_zookeeper_group }}"
+    system: true
+
+- name: Create zookeeper user
+  ansible.builtin.user:
+    name: "{{ lakehouse_zookeeper_user }}"
+    group: "{{ lakehouse_zookeeper_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ lakehouse_zookeeper_data_dir }}"
+    create_home: true
+
+# ─── Download + unpack Apache ZooKeeper ───────────────────────────────────
+- name: Download Apache ZooKeeper tarball
+  ansible.builtin.get_url:
+    url: "{{ lakehouse_zookeeper_download_url }}"
+    dest: "/tmp/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin.tar.gz"
+    mode: "0644"
+    timeout: 600
+
+- name: Create ZooKeeper install dir
+  ansible.builtin.file:
+    path: "/opt/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unpack ZooKeeper
+  ansible.builtin.unarchive:
+    src: "/tmp/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin.tar.gz"
+    dest: "/opt/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin"
+    remote_src: true
+    extra_opts: ["--strip-components=1"]
+    creates: "/opt/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin/bin/zkServer.sh"
+
+- name: Symlink /opt/zookeeper -> versioned install
+  ansible.builtin.file:
+    src: "/opt/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin"
+    dest: "{{ lakehouse_zookeeper_home }}"
+    state: link
+
+- name: Remove the ZooKeeper tarball
+  ansible.builtin.file:
+    path: "/tmp/apache-zookeeper-{{ lakehouse_zookeeper_version }}-bin.tar.gz"
+    state: absent
+
+# ─── Runtime dirs (data holds myid + snapshots; logs; identity) ──────────
+- name: Create ZooKeeper runtime + identity directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ lakehouse_zookeeper_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ lakehouse_zookeeper_data_dir }}", owner: "{{ lakehouse_zookeeper_user }}", mode: "0750" }
+    - { path: "{{ lakehouse_zookeeper_log_dir }}", owner: "{{ lakehouse_zookeeper_user }}", mode: "0750" }
+    - { path: "{{ lakehouse_zookeeper_identity_dir }}", owner: root, mode: "0755" }
+
+# Seed a logback config in ZOOCFGDIR so logging works when the service sets
+# ZOOCFGDIR=/etc/nexus-zookeeper (zkServer.sh looks for logback.xml alongside
+# zoo.cfg). The overlay only writes zoo.cfg + myid.
+- name: Seed logback.xml into the ZooKeeper config dir
+  ansible.builtin.copy:
+    src: "{{ lakehouse_zookeeper_home }}/conf/logback.xml"
+    dest: "{{ lakehouse_zookeeper_identity_dir }}/logback.xml"
+    remote_src: true
+    owner: root
+    group: "{{ lakehouse_zookeeper_group }}"
+    mode: "0644"
+
+# ─── nexus-zookeeper.service (DISABLED at bake) ──────────────────────────
+- name: Install nexus-zookeeper.service systemd unit
+  ansible.builtin.template:
+    src: nexus-zookeeper.service.j2
+    dest: /etc/systemd/system/nexus-zookeeper.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Ensure nexus-zookeeper.service is disabled at bake
+  ansible.builtin.systemd:
+    name: nexus-zookeeper.service
+    enabled: false
+    daemon_reload: true
+
+# ─── Verify ──────────────────────────────────────────────────────────────
+- name: Verify ZooKeeper + Java present
+  ansible.builtin.command: "{{ item }}"
+  changed_when: false
+  loop:
+    - "test -x {{ lakehouse_zookeeper_home }}/bin/zkServer.sh"
+    - "/usr/lib/jvm/java-21-openjdk-amd64/bin/java -version"
+
+- name: Show ZooKeeper install summary
+  ansible.builtin.debug:
+    msg: "Apache ZooKeeper {{ lakehouse_zookeeper_version }} at {{ lakehouse_zookeeper_home }}; JDK 21; service DISABLED until overlay apply"

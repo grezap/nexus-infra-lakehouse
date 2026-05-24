@@ -238,6 +238,100 @@ AppRoles + KV creds (sticky), both templates. A subsequent `apply` re-clones fro
 zero, rebuilds the replica via fresh `pg_basebackup`, and recreates the `nessie`
 DB — the catalog metadata is rebuilt by the bootstrap namespace round-trip.
 
+### §1.13 Build the Spark + ZooKeeper templates (0.L.3)
+
+Two engines → two templates ([feedback_per_cluster_state_per_engine_template]):
+
+```powershell
+cd packer\lakehouse-spark-node
+packer init .; packer build -var "iso_url=H:/VMS/ISO/debian-13.5.0-amd64-netinst.iso" .
+# → _templates/lakehouse-spark-node — JDK21 + Apache Spark 3.5.3 (bin-hadoop3) +
+#   the S3A connector (hadoop-aws 3.3.4 + aws-java-sdk-bundle 1.12.262) + Iceberg
+#   Spark runtime 1.7.1 + iceberg-aws-bundle 1.7.1 (AWS SDK v2 for S3FileIO).
+#   nexus-spark-master.service AND nexus-spark-worker.service both DISABLED.
+
+cd ..\lakehouse-zookeeper-node
+packer init .; packer build -var "iso_url=H:/VMS/ISO/debian-13.5.0-amd64-netinst.iso" .
+# → _templates/lakehouse-zookeeper-node — JDK21 + Apache ZooKeeper 3.9.3;
+#   nexus-zookeeper.service DISABLED.
+```
+
+### §1.14 Cross-env operator order (run FIRST, in nexus-infra-vmware)
+
+```powershell
+# in nexus-infra-vmware (idempotent — only the new spark null_resources apply)
+pwsh -File scripts\foundation.ps1 apply   # +5 reservations (:AA-:AE -> .153/.154/.155/.156/.157) + spark-master.nexus.lab -> .140/.153
+pwsh -File scripts\security.ps1   apply   # spark-server PKI + 5 AppRole sidecars + KV seed nexus/lakehouse/spark/auth-secret
+```
+
+### §1.15 Apply the Spark cluster
+
+```powershell
+# in nexus-infra-lakehouse — MinIO (0.L.1) + Iceberg (0.L.2) MUST be up
+pwsh -File scripts\lakehouse-spark.ps1 apply
+```
+
+Apply graph (per `terraform/envs/lakehouse-spark/main.tf`):
+1. `module.spark_master_1/2`, `module.spark_worker_1/2/3`, `module.zookeeper_1/2/3`
+   — 8 clones → dual-NIC → power on; firstboot self-selects hostname/role +
+   emits `NEXUS_ZK_ID` for ZK nodes.
+2. `null_resource.spark_nftables_backplane` — per-cluster nftables: backplane
+   trust + Spark UI/RPC ports + **the Spark cluster-peer RPC accept** (the 5
+   Spark IPs — executors dial the driver's dynamic ports; see §3.6 #8).
+3. `null_resource.spark_vault_agent` (×5 spark nodes) — Vault Agent + AppRole auth.
+4. `null_resource.spark_tls` (×5) — `spark-server` PKI certs (UI TLS material).
+5. `null_resource.zk_ensemble` — render `zoo.cfg` (server.1/2/3 on the backplane)
+   + `myid` from `NEXUS_ZK_ID`; enable + start all 3; verify quorum.
+6. `null_resource.spark_config` — import Vault CA into the JVM truststore; render
+   `spark-env.sh` (recoveryMode=ZOOKEEPER) + `spark-defaults.conf`
+   (authenticate + AES crypto, **driver.host pinned to node IP**, in-memory
+   session catalog, Nessie REST catalog with **warehouse-by-name** + S3FileIO);
+   start 2 masters then 3 workers.
+7. `null_resource.spark_cluster_bootstrap` — **exit gate**: 1 ALIVE + 1 STANDBY
+   master, 3 ALIVE workers, `/spark` election state in ZK, and a Spark→Nessie→
+   MinIO Iceberg **write round-trip** (CREATE TABLE + INSERT + SELECT count=2).
+
+Wall-clock ~20-28 min (8 clones + firstboot + overlays).
+
+### §1.16 Verify the exit gate (0.L.3)
+
+```powershell
+pwsh -File scripts\smoke-0.L.3.ps1
+# expect: "ALL 0.L.3 SMOKE CHECKS PASSED" (28 checks): reachability, firstboot,
+# identity (incl. NEXUS_ZK_ID), Vault Agent (5 spark nodes), nftables, ZK quorum
+# (1 leader + 2 followers), Spark HA (exactly 1 ALIVE + 1 STANDBY master, 3 ALIVE
+# workers), RPC security (authenticate + AES), /spark election state in ZK,
+# Iceberg namespace via Nessie REST, round-robin DNS. -IncludeChaos kills the
+# active master and asserts the standby auto-promotes.
+```
+
+Manual spot-checks: `curl -s http://192.168.70.140:8080/json/ | jq .aliveworkers`
+(= 3, **query the node IP, not localhost** — the UI binds to SPARK_LOCAL_IP);
+ZK: `/opt/zookeeper/bin/zkServer.sh status` on a zk node (1 leader + 2 followers).
+
+### §1.17 Iterating (selective ops, 0.L.3)
+
+```powershell
+# re-run only the Spark config overlay (after a spark-defaults change):
+pwsh -File scripts\lakehouse-spark.ps1 apply -Vars "enable_spark_cluster_bootstrap=false"
+# bring up only the ZooKeeper ensemble:
+pwsh -File scripts\lakehouse-spark.ps1 apply -Vars "enable_spark_config=false,enable_spark_cluster_bootstrap=false"
+```
+
+> **Trap** ([feedback_terraform_partial_apply_destroys_resources]): every `-Vars`
+> override is the *full* set; pass *only* the overlay you want off.
+
+### §1.18 Tear down (0.L.3)
+
+```powershell
+pwsh -File scripts\lakehouse-spark.ps1 destroy   # removes the 8 spark/zk VMs + overlay state
+```
+
+Survives teardown: gateway reservations/DNS, the `spark-server` PKI role +
+AppRoles + the `auth-secret` KV (sticky), both templates. A subsequent `apply`
+re-clones from zero; the ZK ensemble + Spark HA re-form and the bootstrap
+re-creates the demo Iceberg table.
+
 ---
 
 ## §2 Phase status
@@ -246,7 +340,7 @@ DB — the catalog metadata is rebuilt by the bootstrap namespace round-trip.
 |---|---|---|---|
 | 0.L.1 | MinIO distributed EC (4 nodes) | 2026-05-23 (live-ratified + cold-rebuild proven) | `smoke-0.L.1.ps1` 41/41 |
 | 0.L.2 | Iceberg REST (Nessie ×2) + dedicated PG HA (master-replica + VRRP VIP) | 2026-05-24 (live-ratified + cold-rebuild proven) | `smoke-0.L.2.ps1` 28/28 |
-| 0.L.3 | Apache Spark | pending | — |
+| 0.L.3 | Apache Spark HA (2 masters + 3 workers) + 3-node Apache ZooKeeper | 2026-05-24 (live-ratified + cold-rebuild proven) | `smoke-0.L.3.ps1` 28/28 |
 
 ---
 
@@ -295,3 +389,34 @@ rebuild above hits none of them.
 | 6 | Nessie starts but `/api/v2/config` 500s; logs show the default datasource is inactive / no JDBC | Nessie bundles a **named** `postgresql` datasource shipped `active=false`; the inert default datasource was being used | `QUARKUS_DATASOURCE_POSTGRESQL_ACTIVE=true` + `NESSIE_VERSION_STORE_PERSIST_JDBC_DATASOURCE=postgresql` (select the named DS). |
 | 7 | Health poll on `https://…:19120/q/health` never 200; service is actually up | Quarkus serves `/q/health` on the **management** interface (`http :9000`), not the app port (`https :19120`) | Probe `http://localhost:9000/q/health`; smoke + apply gate both corrected. |
 | 8 | Nessie won't boot: `SRCFG00050` on the S3 access-key | The inline `…access-key.name`/`.secret` form fails Quarkus config validation | Secret-URN form: `…access-key=urn:nessie-secret:quarkus:lakehouse-s3-creds` + `lakehouse-s3-creds.name`/`.secret` in `nessie.properties` via `QUARKUS_CONFIG_LOCATIONS`. ([feedback_nessie_jdbc2_s3_quarkus]) |
+
+### §3.5 Cold-rebuild canon — 0.L.3 (PROVEN 2026-05-24)
+
+```powershell
+# (both spark/zk templates built incl. iceberg-aws-bundle; MinIO 0.L.1 + Iceberg
+#  0.L.2 up; cross-tier prereqs sticky)
+pwsh -File scripts\lakehouse-spark.ps1 cycle   # destroy → apply → smoke
+# → "ALL 0.L.3 SMOKE CHECKS PASSED" (28). The ZK ensemble + Spark HA re-form from
+#   zero; the bootstrap re-runs the Spark → Nessie → MinIO Iceberg write round-trip.
+```
+
+### §3.6 Apply-time transient chronology — 0.L.3
+
+The Spark write path is a notoriously layered integration; #8 (the firewall gap)
+masqueraded as every other symptom. **Lesson: "Initial job has not accepted any
+resources" with free cores ≠ a resources problem — it means executors launch and
+die.** All fixed in source; the cold rebuild above hits none of them.
+
+| # | Symptom | Diagnosis | Recovery (now in source) |
+|---|---|---|---|
+| 1 | Spark worker crash-loops: `ERROR Utils: Failed to create directory /opt/spark/work` (`AccessDeniedException`) | The worker work dir defaults under `$SPARK_HOME` = `/opt/spark` (root-owned symlinked install); the worker runs as `spark` | `spark-env.sh`: `export SPARK_WORKER_DIR=/var/lib/spark/work` (the spark-owned data dir). |
+| 2 | Bootstrap/smoke "no ALIVE master"/UI checks fail though the master is up | The Master/Worker Web UI binds to `SPARK_LOCAL_IP` (the node VMnet11 IP), **not** localhost | Query the master UI by node IP (`http://<ip>:8080/json/`), not `localhost`. |
+| 3 | SparkContext init: `java.lang.IllegalArgumentException: path must be absolute` (S3Guard `PathMetadata`) | `spark.eventLog.dir=s3a://spark-events` (bucket-root via hadoop-S3A) hits an S3Guard root-path quirk | eventLog disabled (`spark.eventLog.enabled=false`); the deliverable is the Iceberg write, history-server is deferred. |
+| 4 | Nessie REST: `Server error: IllegalStateException: Warehouse 's3a://warehouse' is not known` | The Iceberg REST `warehouse` config must be the **name** Nessie registered, not a URI | `spark.sql.catalog.nexus.warehouse=warehouse` (the name); Nessie owns the location + server-side S3 config. |
+| 5 | `Cannot initialize FileIO … S3FileIO … NoClassDefFoundError software/amazon/awssdk/.../S3Exception` | Iceberg `S3FileIO` needs **AWS SDK v2**; only `aws-java-sdk-bundle` (v1, for hadoop-S3A) was installed | Bake `iceberg-aws-bundle-1.7.1.jar` into the spark template's `/opt/spark/jars`. |
+| 6 | INSERT fails booting an embedded Apache Derby Hive metastore | spark-sql defaults `spark.sql.catalogImplementation=hive` for the *default* catalog (`spark_catalog`) even when all tables live in `nexus` | `spark.sql.catalogImplementation=in-memory` (no Hive/Derby; the `nexus` Iceberg catalog is unaffected). |
+| 7 | Executors exit code 1; driver-url is `…@spark-master.nexus.lab:<port>` | The node's reverse DNS resolves to the **round-robin** `spark-master.nexus.lab` (both masters), so executors dialed the wrong master | `spark.driver.host`/`spark.driver.bindAddress` = the node's own VMnet11 IP (`SPARK_LOCAL_IP`). |
+| 8 | **Every job hangs**: "Initial job has not accepted any resources" with 6 cores free; executors launch + exit 1 (empty stderr); `nft` drop counter climbing | nftables opened only the *fixed* Spark ports (7077/8080/8081), not the **dynamic** `spark.driver.port`/`blockManager.port` executors dial back on → executors can't register | nftables: accept all TCP between the 5 Spark-node VMnet11 IPs (one trust domain). ([feedback_spark_standalone_executor_rpc_firewall]) |
+| 9 | `nft -f` fails: `Error: comment too long, 128 characters maximum allowed` | An nftables rule `comment` exceeded the 128-char cap | Shortened the peer-rule comment. |
+| 10 | Smoke "namespace not present via Iceberg REST" though the table exists | Nessie scopes Iceberg-REST namespaces under the prefix `{ref}|{warehouse}` (`main%7Cwarehouse`); a bare `/v1/namespaces` is empty; curl also needs `--cacert` | Smoke queries `/iceberg/v1/main%7Cwarehouse/namespaces` with `--cacert` the Vault Agent CA bundle. |
+| — | `vmrun start` sporadic `Unknown error` on fresh clones | VMware-under-load flake | Re-run apply; tainted clones retry cleanly. ([feedback_vmrun_unknown_error_transient]) |

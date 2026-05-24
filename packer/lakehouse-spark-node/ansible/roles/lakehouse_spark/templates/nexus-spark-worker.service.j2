@@ -1,0 +1,29 @@
+[Unit]
+Description=Nexus Apache Spark standalone Worker
+Documentation=https://spark.apache.org/docs/latest/spark-standalone.html
+After=network-online.target lakehouse-node-firstboot.service
+Wants=network-online.target
+Requires=lakehouse-node-firstboot.service
+# Delivered DISABLED by the lakehouse_spark Packer role. Enabled on
+# spark-worker-1/2/3 only by role-overlay-spark-config.tf, which renders
+# {{ lakehouse_spark_identity_dir }}/spark-cluster.env (SPARK_MASTER_URL = the
+# multi-master URL spark://spark-master-1:7077,spark-master-2:7077) + spark-env.sh.
+ConditionPathExists={{ lakehouse_spark_identity_dir }}/spark-cluster.env
+
+[Service]
+Type=simple
+User={{ lakehouse_spark_user }}
+Group={{ lakehouse_spark_group }}
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+Environment=SPARK_HOME={{ lakehouse_spark_home }}
+Environment=SPARK_LOG_DIR={{ lakehouse_spark_log_dir }}
+EnvironmentFile=-{{ lakehouse_spark_identity_dir }}/spark-cluster.env
+ExecStart={{ lakehouse_spark_home }}/bin/spark-class org.apache.spark.deploy.worker.Worker ${SPARK_MASTER_URL} --webui-port 8081
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

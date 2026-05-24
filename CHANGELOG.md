@@ -61,3 +61,35 @@ lakehouse tier (`08-spark`), Phase 0.L.
   master-replica HA pair) in `nexus-platform-plan`.
 - Live-ratified + cold-rebuild-proven 2026-05-24 (`smoke-0.L.2.ps1` 28/28 GREEN);
   8 apply-time transients fixed in source (handbook §3.4).
+
+### Added — Phase 0.L.3 (Apache Spark HA + ZooKeeper)
+
+- `packer/lakehouse-spark-node` — Debian 13 + Temurin JDK 21 + Apache Spark 3.5.3
+  (bin-hadoop3) + the S3A connector (`hadoop-aws` 3.3.4 + `aws-java-sdk-bundle`
+  1.12.262) + Iceberg Spark runtime 1.7.1 + `iceberg-aws-bundle` 1.7.1 (AWS SDK v2
+  for `S3FileIO`). Both `nexus-spark-master.service` + `nexus-spark-worker.service`
+  delivered DISABLED.
+- `packer/lakehouse-zookeeper-node` — Debian 13 + JDK 21 + Apache ZooKeeper 3.9.3;
+  `nexus-zookeeper.service` delivered DISABLED.
+- `lakehouse_firstboot` extended: spark-master-2 (.153), spark-worker-3 (.154),
+  zookeeper-1/2/3 (.155-.157); emits `NEXUS_ZK_ID` for ZK nodes.
+- `terraform/envs/lakehouse-spark` — 8 VMs (2 masters + 3 workers + 3 ZooKeeper) +
+  overlays: nftables-backplane (+ Spark cluster-peer RPC accept for dynamic
+  driver/blockManager ports), vault-agents (5 spark nodes), tls (`spark-server`
+  PKI), zk-ensemble (zoo.cfg + myid; quorum), spark-config (recoveryMode=ZOOKEEPER,
+  multi-master URL, driver.host pinned, in-memory session catalog, Nessie REST
+  catalog warehouse-by-name + S3FileIO, authenticate + AES crypto), and
+  cluster-bootstrap (HA election + 3 workers + `/spark` in ZK + Spark→Nessie→MinIO
+  Iceberg write round-trip exit gate).
+- Operator wrapper `scripts/lakehouse-spark.ps1` + smoke gate
+  `scripts/smoke-0.L.3.ps1` (28 checks; `-IncludeChaos` master-failover).
+- Cross-tier overlays in `nexus-infra-vmware`: foundation reservations/DNS extended
+  (5 MACs `:AA`-`:AE` → `.153`/`.154`/`.155`/`.156`/`.157`; `spark-master.nexus.lab`
+  → the 2 HA masters) + security (`role-overlay-vault-pki-spark.tf`,
+  `role-overlay-vault-agent-spark-{policies,approles}.tf`,
+  `role-overlay-vault-spark-creds-seed.tf`).
+- ADR-0035 (Spark standalone HA — 2 masters + Apache ZooKeeper quorum; the one
+  deliberate ZK exception) in `nexus-platform-plan`.
+- Live-ratified + cold-rebuild-proven 2026-05-24 (`smoke-0.L.3.ps1` 28/28 GREEN);
+  10 apply-time transients fixed in source (handbook §3.6), incl. the
+  executor-RPC firewall gap and the driver.host round-robin trap.

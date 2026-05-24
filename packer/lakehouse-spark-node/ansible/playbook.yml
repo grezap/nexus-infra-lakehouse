@@ -1,0 +1,27 @@
+---
+# lakehouse-spark-node -- Ansible playbook (local, Packer ansible-local).
+# Per-engine template: JDK 21 + Apache Spark + S3A + Iceberg runtime.
+
+- name: Configure lakehouse-spark-node template (Phase 0.L.3)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    target_user: "{{ target_user | default('nexusadmin') }}"
+    lakehouse_spark_version: "{{ lakehouse_spark_version | default('3.5.3') }}"
+    lakehouse_spark_download_url: "{{ lakehouse_spark_download_url | default('https://archive.apache.org/dist/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz') }}"
+    lakehouse_iceberg_runtime_url: "{{ lakehouse_iceberg_runtime_url | default('https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.7.1/iceberg-spark-runtime-3.5_2.12-1.7.1.jar') }}"
+    lakehouse_iceberg_aws_bundle_url: "{{ lakehouse_iceberg_aws_bundle_url | default('https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.7.1/iceberg-aws-bundle-1.7.1.jar') }}"
+    lakehouse_hadoop_aws_url: "{{ lakehouse_hadoop_aws_url | default('https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar') }}"
+    lakehouse_aws_sdk_bundle_url: "{{ lakehouse_aws_sdk_bundle_url | default('https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar') }}"
+    lakehouse_jdk_package: "{{ lakehouse_jdk_package | default('openjdk-21-jre-headless') }}"
+
+  roles:
+    - nexus_identity
+    - nexus_network
+    - nexus_firewall
+    - nexus_observability
+    - lakehouse_firstboot
+    - lakehouse_spark

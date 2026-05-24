@@ -1,0 +1,23 @@
+---
+# lakehouse-zookeeper-node -- Ansible playbook (local, Packer ansible-local).
+# Per-engine template: JDK 21 + Apache ZooKeeper (Spark master-HA coordination).
+
+- name: Configure lakehouse-zookeeper-node template (Phase 0.L.3)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    target_user: "{{ target_user | default('nexusadmin') }}"
+    lakehouse_zookeeper_version: "{{ lakehouse_zookeeper_version | default('3.9.3') }}"
+    lakehouse_zookeeper_download_url: "{{ lakehouse_zookeeper_download_url | default('https://archive.apache.org/dist/zookeeper/zookeeper-3.9.3/apache-zookeeper-3.9.3-bin.tar.gz') }}"
+    lakehouse_jdk_package: "{{ lakehouse_jdk_package | default('openjdk-21-jre-headless') }}"
+
+  roles:
+    - nexus_identity
+    - nexus_network
+    - nexus_firewall
+    - nexus_observability
+    - lakehouse_firstboot
+    - lakehouse_zookeeper
