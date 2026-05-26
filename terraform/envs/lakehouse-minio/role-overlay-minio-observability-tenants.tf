@@ -19,12 +19,12 @@ resource "null_resource" "minio_obs_tenants" {
   count = var.enable_minio_obs_tenants ? 1 : 0
 
   triggers = {
-    bootstrap_id  = length(null_resource.minio_bucket_bootstrap) > 0 ? null_resource.minio_bucket_bootstrap[0].id : "disabled"
-    loki_bucket   = var.minio_loki_bucket
-    tempo_bucket  = var.minio_tempo_bucket
-    loki_policy   = var.minio_loki_policy_name
-    tempo_policy  = var.minio_tempo_policy_name
-    obs_tenant_v  = "1"
+    bootstrap_id = length(null_resource.minio_bucket_bootstrap) > 0 ? null_resource.minio_bucket_bootstrap[0].id : "disabled"
+    loki_bucket  = var.minio_loki_bucket
+    tempo_bucket = var.minio_tempo_bucket
+    loki_policy  = var.minio_loki_policy_name
+    tempo_policy = var.minio_tempo_policy_name
+    obs_tenant_v = "1"
   }
 
   depends_on = [null_resource.minio_bucket_bootstrap]
