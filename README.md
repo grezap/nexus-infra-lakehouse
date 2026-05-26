@@ -7,9 +7,15 @@ Postgres) + **Apache Spark** (master + 2 workers). Part of the
 [NexusPlatform](https://github.com/grezap) portfolio; built on the per-cluster
 Terraform state + per-engine Packer template canon.
 
-> Status: **Phase 0.L.1 (MinIO) in progress.** 0.L.2 (Iceberg REST + PG HA) and
-> 0.L.3 (Spark) follow. Harbor ships in the sibling repo `nexus-infra-registry`;
-> the StarRocks shared-data/CN tier extends `nexus-infra-analytics`.
+> Status: **Phase 0.L lakehouse tier SEALED 2026-05-26 — `v0.1.0` tagged.**
+> 0.L.1 (MinIO), 0.L.2 (Iceberg/Nessie + dedicated PG HA), 0.L.3 (Spark HA +
+> ZooKeeper) all live-ratified + cold-rebuild-proven (smoke gates 41/41 ·
+> 28/28 · 28/28 GREEN; ADRs 0033-0035). Harbor ships in the sibling repo
+> [`nexus-infra-registry`](https://github.com/grezap/nexus-infra-registry)
+> (`v0.1.0`). The StarRocks shared-data/CN tier extends
+> [`nexus-infra-analytics`](https://github.com/grezap/nexus-infra-analytics)
+> (`v0.2.0`, ADR-0037) — the lakehouse-minio env hosts its dedicated tenant
+> (bucket `starrocks` + scoped policy).
 
 ## Sub-phases
 

@@ -6,6 +6,17 @@ lakehouse tier (`08-spark`), Phase 0.L.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-26 — Phase 0.L lakehouse tier SEALED
+
+Three sub-phases live-ratified + cold-rebuild-proven on the per-engine + per-cluster-state canon (all three sealed individually in May 2026):
+
+- **0.L.1 MinIO** 4-node distributed erasure-coded object store (smoke 41/41 GREEN; 2 transients fixed in source; ADR-0033). The S3 backend every other lakehouse layer depends on, plus the 0.L.4 Harbor registry blob backend and the 0.L.5 StarRocks shared-data storage volume.
+- **0.L.2 Iceberg REST catalog (Project Nessie ×2) + dedicated PostgreSQL 17 master-replica HA pair + keepalived VRRP VIP** (smoke 28/28 GREEN; 8 transients fixed in source; ADR-0034).
+- **0.L.3 Apache Spark HA** (2 masters ZooKeeper-elected + 3 workers + dedicated 3-node Apache ZooKeeper ensemble) (smoke 28/28 GREEN; 10 transients fixed in source including the executor-RPC firewall gap; ADR-0035). End-to-end Spark → Iceberg → MinIO write path proven.
+- **0.L.5 cross-tier (this release)**: dedicated MinIO tenant for the SR-shared-data cluster (`starrocks` bucket + `nexus-starrocks-app` service account + scoped `starrocks-tenant` policy with cross-bucket-deny proven; ADR-0037). The cluster itself lives in [`nexus-infra-analytics` v0.2.0](https://github.com/grezap/nexus-infra-analytics).
+
+16 lakehouse VMs cold-rebuild proven (4 MinIO + 4 Iceberg + 8 Spark/ZK). All mTLS via per-host Vault PKI. Round-robin DNS front doors per ADR-0031. Documented in `docs/handbook.md` §0–§3.
+
 ### Added — Phase 0.L.5 cross-tier (2026-05-26) — MinIO `starrocks` tenant for the SR-shared-data cluster (ADR-0037)
 
 `terraform/envs/lakehouse-minio/role-overlay-minio-starrocks-tenant.tf` — provisions the dedicated MinIO tenant for `nexus-infra-analytics`'s new shared-data cluster:
