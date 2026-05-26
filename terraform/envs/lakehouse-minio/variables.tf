@@ -114,6 +114,11 @@ variable "enable_minio_bucket_bootstrap" {
   default     = true
   description = "role-overlay-minio-bucket-bootstrap.tf -- one-shot exit gate: mc alias + create the warehouse/spark-events buckets + the least-priv lakehouse-app service account + verify erasure-set health + node-loss tolerance."
 }
+variable "enable_minio_starrocks_tenant" {
+  type        = bool
+  default     = true
+  description = "role-overlay-minio-starrocks-tenant.tf (ADR-0037 / 0.L.5) -- provisions the dedicated MinIO tenant for the StarRocks shared-data cluster: bucket `starrocks`, service account `nexus-starrocks-app` (KV-seeded by the security env), and the scoped `starrocks-tenant` policy granting s3:* only on the starrocks bucket. Default true (steady state)."
+}
 
 # ─── Operator + cross-env coupling vars ───────────────────────────────────
 variable "lakehouse_node_user" {
@@ -173,4 +178,26 @@ variable "minio_extra_buckets" {
   type        = list(string)
   default     = ["spark-events", "lakehouse"]
   description = "Additional buckets created at bootstrap (spark-events = Spark history logs; lakehouse = medallion bronze/silver/gold root)."
+}
+
+# ─── 0.L.5 — StarRocks shared-data tenant (ADR-0037) ─────────────────────
+variable "minio_starrocks_bucket" {
+  type        = string
+  default     = "starrocks"
+  description = "Bucket holding the StarRocks shared-data internal cloud-native tables (the storage volume's LOCATIONS = 's3://starrocks/'). Provisioned by role-overlay-minio-starrocks-tenant.tf."
+}
+variable "minio_starrocks_policy_name" {
+  type        = string
+  default     = "starrocks-tenant"
+  description = "MinIO policy name attached to the nexus-starrocks-app service account: s3:* scoped to the starrocks bucket only (tighter than the readwrite policy reused by Harbor for the lakehouse-app key)."
+}
+variable "kv_starrocks_s3_access_key_path" {
+  type        = string
+  default     = "nexus/analytics/starrocks-sd/s3-access-key"
+  description = "Vault KV path holding the fixed `nexus-starrocks-app` MinIO access key (seeded by the security env's role-overlay-vault-starrocks-sd-creds-seed.tf, field `value`)."
+}
+variable "kv_starrocks_s3_secret_key_path" {
+  type        = string
+  default     = "nexus/analytics/starrocks-sd/s3-secret-key"
+  description = "Vault KV path holding the random 40-char `nexus-starrocks-app` MinIO secret key (seeded by the security env, field `value`)."
 }

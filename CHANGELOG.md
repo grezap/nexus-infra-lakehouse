@@ -6,6 +6,19 @@ lakehouse tier (`08-spark`), Phase 0.L.
 
 ## [Unreleased]
 
+### Added — Phase 0.L.5 cross-tier (2026-05-26) — MinIO `starrocks` tenant for the SR-shared-data cluster (ADR-0037)
+
+`terraform/envs/lakehouse-minio/role-overlay-minio-starrocks-tenant.tf` — provisions the dedicated MinIO tenant for `nexus-infra-analytics`'s new shared-data cluster:
+
+- **Bucket** `starrocks` (idempotent `mc mb --ignore-existing`) — holds the StarRocks storage volume's internal cloud-native tables at `s3://starrocks/`.
+- **MinIO service account** `nexus-starrocks-app` (idempotent `mc admin user add`; access/secret keys read from Vault KV `nexus/analytics/starrocks-sd/s3-{access,secret}-key`, seeded by the security env's `role-overlay-vault-starrocks-sd-creds-seed.tf`).
+- **Scoped policy** `starrocks-tenant`: `s3:ListBucket` + `s3:GetBucketLocation` on `arn:aws:s3:::starrocks` plus `s3:*` on `arn:aws:s3:::starrocks/*` — **no cross-bucket access** (tighter than the global `readwrite` policy reused by Harbor for `s3://harbor`; the explicit least-privilege choice in ADR-0037).
+- **Negative-proof check**: the overlay tries to write to `s3://warehouse` as the new identity and FAILS on it (proving the policy is correctly scoped); then writes + reads + removes a probe object on `s3://starrocks` (proving normal use works). The whole bootstrap is gated by `SR_TENANT_OK`.
+
+Runs on `minio-1` (reuses the existing `mc alias` configured by `role-overlay-minio-bucket-bootstrap`). Toggle: `enable_minio_starrocks_tenant` (default true). Variables added: `minio_starrocks_bucket`, `minio_starrocks_policy_name`, `kv_starrocks_s3_access_key_path`, `kv_starrocks_s3_secret_key_path`.
+
+Applied 2026-05-26 — tenant bootstrap proven via cross-bucket-deny check; downstream `nexus-infra-analytics` SR-shared-data cluster SEALED same day (the storage volume `nexus_minio_starrocks` is live in this MinIO cluster's `starrocks` bucket).
+
 ### Added — Phase 0.L.1 (MinIO distributed erasure-coded object store)
 
 - Repo scaffold on the per-cluster-state + per-engine-template canon: shared
