@@ -201,3 +201,42 @@ variable "kv_starrocks_s3_secret_key_path" {
   default     = "nexus/analytics/starrocks-sd/s3-secret-key"
   description = "Vault KV path holding the random 40-char `nexus-starrocks-app` MinIO secret key (seeded by the security env, field `value`)."
 }
+
+# ─── 0.I.2 + 0.I.3 — Observability tenants (Loki + Tempo) (ADR-0038) ─────
+variable "enable_minio_obs_tenants" {
+  type        = bool
+  default     = true
+  description = "Toggle: provision the Loki + Tempo MinIO tenants (buckets + service accounts + scoped policies). Mirrors the SR shared-data tenant shape (ADR-0037)."
+}
+variable "minio_loki_bucket" {
+  type    = string
+  default = "loki"
+}
+variable "minio_loki_policy_name" {
+  type    = string
+  default = "loki-tenant"
+}
+variable "kv_loki_s3_access_key_path" {
+  type    = string
+  default = "nexus/observability/loki/s3-access-key"
+}
+variable "kv_loki_s3_secret_key_path" {
+  type    = string
+  default = "nexus/observability/loki/s3-secret-key"
+}
+variable "minio_tempo_bucket" {
+  type    = string
+  default = "tempo"
+}
+variable "minio_tempo_policy_name" {
+  type    = string
+  default = "tempo-tenant"
+}
+variable "kv_tempo_s3_access_key_path" {
+  type    = string
+  default = "nexus/observability/tempo/s3-access-key"
+}
+variable "kv_tempo_s3_secret_key_path" {
+  type    = string
+  default = "nexus/observability/tempo/s3-secret-key"
+}
