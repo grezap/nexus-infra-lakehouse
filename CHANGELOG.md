@@ -6,6 +6,11 @@ lakehouse tier (`08-spark`), Phase 0.L.
 
 ## [Unreleased]
 
+### Fixed / cold-rebuild (2026-06-25, for nexus-cli v0.8.4 LakehouseAdapter)
+- **`vmrun_path` x86 → non-x86** in `terraform/envs/lakehouse-{minio,iceberg,spark}/variables.tf` + `terraform/modules/vm/variables.tf` — the default pointed at the deleted `C:/Program Files (x86)/...` path (the VMware-relocation trap); a from-zero clone failed on it. Now `C:/Program Files/VMware/VMware Workstation/vmrun.exe`.
+- **Cold-rebuild-proven the Iceberg + Spark envs** (`lakehouse-iceberg.ps1` + `lakehouse-spark.ps1` destroy→apply→smoke; MinIO kept in place — reformatting its EC drives would wipe the cross-tier loki/tempo/harbor/starrocks buckets). Smoke 0.L.2 (28) + 0.L.3 (28) ALL PASSED; the Spark→Nessie→MinIO `s3a://warehouse` write round-trip (count=2) re-proved the cross-tier chain. This re-certed Nessie/iceberg-pg/Spark/ZooKeeper to the new Vault root (the v0.8.1-greenfield CA split) + re-seeded the iceberg-pg streaming standby.
+- **3 transients chronicled:** (1) vmrun "Unknown error" on a single power_on after destroy → re-run apply (tainted retries clean); (2) post-destroy zombie VMs when the destroy ran with the pre-fix x86 path still in state (the destroy-provisioner's stop failed non-terminating → VMs left running + dirs intact) → recover by **in-guest `systemctl poweroff` BEFORE `destroy`** so the dirs unlock and Remove-Item cleans them; (3) **MinIO IAM key drift** — the v0.8.1 greenfield rotated KV `lakehouse/minio/app-secret-key` but the MinIO `nexus-lakehouse-app` user kept the old secret → fresh Nessie got S3 403 → data-preserving on-node `mc admin user add nexuslocal nexus-lakehouse-app <kv-secret>` re-sync (access key + policy + bucket data unchanged).
+
 ## [0.1.0] - 2026-05-26 — Phase 0.L lakehouse tier SEALED
 
 Three sub-phases live-ratified + cold-rebuild-proven on the per-engine + per-cluster-state canon (all three sealed individually in May 2026):
