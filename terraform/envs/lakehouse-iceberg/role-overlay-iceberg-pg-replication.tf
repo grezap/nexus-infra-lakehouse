@@ -7,12 +7,23 @@
  *   1. PRIMARY (iceberg-pg-1): conf.d drop-in (wal_level=replica, ssl) + pg_hba
  *      (replication over backplane + nessie/admin over VMnet11 TLS) + roles
  *      (repluser, nessie) + the nessie DB.
- *   2. REPLICA (iceberg-pg-2): stop + wipe PGDATA + pg_basebackup -R from the
- *      primary's backplane IP + start as a hot standby.
- *   3. keepalived on both (VRRP VIP .151, unicast, state BACKUP + nopreempt so a
+ *   2. REPLICA (iceberg-pg-2): the NEXUS-ICEBERG-HBA block (so a PROMOTED standby
+ *      admits Nessie -- pg_hba lives in /etc, NOT PGDATA, so pg_basebackup never
+ *      carried it over; this was the 0.L.2 failover gap) + stop + wipe PGDATA +
+ *      pg_basebackup -R from the primary's backplane IP + start as a hot standby.
+ *   3. Fencing primitives on BOTH nodes (0.L.2.1 hardening -> makes the catalog-DB
+ *      failover a real one-shot verb, LakehouseAdapter --direction iceberg-pg):
+ *        - /usr/local/sbin/nexus-iceberg-reseed.sh <src-backplane> : guarded
+ *          fence+re-seed (REFUSE if it holds the VIP or is already a streaming
+ *          standby; require the source to be a reachable PRIMARY) -> stop, wipe
+ *          PGDATA, pg_basebackup -R from the new primary, start as standby.
+ *        - /etc/keepalived/nexus-iceberg-fence.sh : notify_fault hook -> detaches
+ *          a best-effort self-heal reseed against the PEER (the adapter is the
+ *          reliable orchestrated path; this covers an unattended PG crash).
+ *   4. keepalived on both (VRRP VIP .151, unicast, state BACKUP + nopreempt so a
  *      recovered old-primary never flaps the VIP back; notify_master promotes a
- *      standby on failover).
- *   4. verify pg_stat_replication shows the standby streaming.
+ *      standby on failover; notify_fault self-fences a demoted old primary).
+ *   5. verify pg_stat_replication shows the standby streaming.
  *
  * Hex KV passwords (openssl rand -hex) are inline-safe in SQL (no quoting traps).
  * All creds read on-node via the local Vault Agent token; never transit the host.
@@ -25,7 +36,7 @@ resource "null_resource" "iceberg_pg_replication" {
 
   triggers = {
     tls_pg_ids = join(",", [for k, r in null_resource.iceberg_tls : r.id if can(regex("iceberg-pg", k))])
-    pg_repl_v  = "1"
+    pg_repl_v  = "2" # 0.L.2.1: pg_hba on BOTH nodes + fence/re-seed primitives + notify_fault
     ssh_user   = var.lakehouse_node_user
   }
 
@@ -148,6 +159,19 @@ ssl_key_file = '/etc/nexus-iceberg-pg/tls/server.key'
 ssl_ca_file = '/etc/nexus-iceberg-pg/tls/ca.crt'
 EOF
 grep -q "include_dir = 'conf.d'" `$CONF/postgresql.conf || echo "include_dir = 'conf.d'" | sudo tee -a `$CONF/postgresql.conf >/dev/null
+# The NEXUS-ICEBERG-HBA block MUST exist on the REPLICA too: pg_hba.conf lives in
+# /etc (not PGDATA), so pg_basebackup never copies the primary's version. Without
+# it, a PROMOTED standby refuses the Nessie REST hosts -> the catalog front door
+# lands on a PG Nessie cannot use (the 0.L.2 failover gap). Idempotent + reloaded.
+if ! sudo grep -q 'NEXUS-ICEBERG-HBA' `$CONF/pg_hba.conf; then
+  sudo tee -a `$CONF/pg_hba.conf >/dev/null <<EOF
+# NEXUS-ICEBERG-HBA
+host    replication   repluser   192.168.10.0/24   scram-sha-256
+hostssl nessie        nessie     192.168.70.0/24   scram-sha-256
+hostssl all           postgres   192.168.70.0/24   scram-sha-256
+EOF
+  sudo -u postgres psql -tAc 'SELECT pg_reload_conf()' >/dev/null 2>&1 || true
+fi
 # walreceiver needs the replication password to stream; pg_basebackup -R does
 # NOT embed it in primary_conninfo, so authenticate via the postgres .pgpass.
 # Written ALWAYS (also on the already-standby idempotent path).
@@ -185,7 +209,68 @@ if sudo -u postgres psql -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q
 fi
 '@
       $promoteB64 = [Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes(($promote -replace "`r`n","`n")))
-      foreach ($n in @(@{ip=$primaryIp;src=$primaryIp;peer=$replicaIp;prio=110}, @{ip=$replicaIp;src=$replicaIp;peer=$primaryIp;prio=100})) {
+
+      # nexus-iceberg-reseed.sh -- the guarded fence + re-seed primitive (identical
+      # on both nodes; the source primary is passed as $1). Drives the adapter's
+      # `failover --direction iceberg-pg` AND the notify_fault self-heal.
+      $reseed = @"
+#!/bin/bash
+# nexus-iceberg-reseed.sh <source_backplane_ip> -- fence + re-seed THIS node as a
+# fresh streaming standby of the current primary. Installed by the 0.L.2.1 fencing
+# hardening. Guarded so it can NEVER wipe the live primary.
+set -uo pipefail
+SRC="`$${1:-}"
+VIP="$vip"; KVREPL="$kvRepl"; KVSUPER="$kvSuper"; PGVER=17
+DATA="/var/lib/postgresql/`$PGVER/main"
+log(){ echo "[iceberg-reseed] `$(date -Is) `$*"; }
+[ -n "`$SRC" ] || { log "usage: nexus-iceberg-reseed.sh <source_backplane_ip>"; exit 2; }
+SRCMGMT="`$(echo "`$SRC" | sed 's/^192\.168\.10\./192.168.70./')"
+exec 9>/run/nexus-iceberg-reseed.lock || exit 0
+flock -n 9 || { log "another reseed in progress; skip"; exit 0; }
+# SAFETY 1: never re-seed the node that holds the catalog VIP (it IS the primary).
+if ip -4 -o addr show 2>/dev/null | grep -q "`$VIP/"; then log "REFUSE: this node holds VIP `$VIP (it is the primary)"; exit 3; fi
+export VAULT_ADDR="`$(grep -oP 'address\s*=\s*"\K[^"]+' /etc/vault-agent/00-base.hcl)"
+export VAULT_CACERT=/etc/vault-agent/ca-bundle.crt
+TOKEN="`$(sudo cat /var/run/nexus-vault-agent/token)"
+REPLPW="`$(VAULT_TOKEN=`$TOKEN /usr/local/bin/vault kv get -field=value `$KVREPL)"
+SUPERPW="`$(VAULT_TOKEN=`$TOKEN /usr/local/bin/vault kv get -field=value `$KVSUPER)"
+[ -n "`$REPLPW" ] || { log "ERROR: empty replication password from KV"; exit 4; }
+# SAFETY 2: the source must be reachable AND a primary (in_recovery=f).
+if ! /usr/lib/postgresql/`$PGVER/bin/pg_isready -q -h "`$SRC" -p 5432; then log "REFUSE: source `$SRC not accepting connections"; exit 5; fi
+SRCREC="`$(PGPASSWORD="`$SUPERPW" psql -h "`$SRCMGMT" -p 5432 -U postgres -d postgres -tAc 'SELECT pg_is_in_recovery()' 2>/dev/null | tr -d '[:space:]')"
+[ "`$SRCREC" = "f" ] || { log "REFUSE: source `$SRCMGMT is not a primary (pg_is_in_recovery=`$SRCREC)"; exit 6; }
+# SAFETY 3: already a healthy streaming standby? nothing to do (idempotent).
+if sudo test -f "`$DATA/standby.signal" && sudo -u postgres psql -tAc 'SELECT status FROM pg_stat_wal_receiver' 2>/dev/null | grep -qi streaming; then
+  log "already a streaming standby; nothing to do"; exit 0
+fi
+log "re-seeding as a standby of `$SRC ..."
+echo "*:*:replication:repluser:`$REPLPW" | sudo tee /var/lib/postgresql/.pgpass >/dev/null
+sudo chown postgres:postgres /var/lib/postgresql/.pgpass; sudo chmod 0600 /var/lib/postgresql/.pgpass
+sudo pg_ctlcluster `$PGVER main stop 2>/dev/null || sudo systemctl stop postgresql@`$PGVER-main || true
+sudo rm -rf "`$DATA"
+sudo install -d -m 0700 -o postgres -g postgres "`$DATA"
+sudo -u postgres env PGPASSWORD="`$REPLPW" pg_basebackup -h "`$SRC" -p 5432 -U repluser -D "`$DATA" -Fp -Xs -P -R
+sudo pg_ctlcluster `$PGVER main start 2>/dev/null || sudo systemctl start postgresql@`$PGVER-main
+sudo systemctl enable postgresql@`$PGVER-main >/dev/null 2>&1 || true
+for i in `$(seq 1 30); do sudo -u postgres psql -tAc 'SELECT pg_is_in_recovery()' 2>/dev/null | grep -qi t && break; sleep 2; done
+log "RESEED_OK"
+"@
+      $reseedB64 = [Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes(($reseed -replace "`r`n","`n")))
+
+      foreach ($n in @(@{ip=$primaryIp;src=$primaryIp;peer=$replicaIp;peer_bp=$replicaBp;prio=110}, @{ip=$replicaIp;src=$replicaIp;peer=$primaryIp;peer_bp=$primaryBp;prio=100})) {
+        # nexus-iceberg-fence.sh -- keepalived notify_fault hook (per-node peer).
+        $fence = @"
+#!/bin/bash
+# nexus-iceberg-fence.sh -- keepalived notify_fault hook (best-effort self-heal).
+# Local PG is down + keepalived released the VIP -> detach a re-seed against the
+# PEER (the node that has taken the VIP / been promoted). The adapter's
+# `failover --direction iceberg-pg` is the RELIABLE orchestrated path; this only
+# covers an UNATTENDED PG crash. All safety guards live in the reseed helper.
+PEER_BP="$($n.peer_bp)"
+nohup bash -c "sleep 6; /usr/local/sbin/nexus-iceberg-reseed.sh `$PEER_BP" >> /var/log/nexus-iceberg-reseed.log 2>&1 &
+exit 0
+"@
+        $fenceB64 = [Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes(($fence -replace "`r`n","`n")))
         $kaConf = @"
 global_defs {
   script_user root
@@ -215,6 +300,7 @@ vrrp_instance VI_ICEBERG_DB {
     $vip/24 dev nic0
   }
   notify_master "/etc/keepalived/nexus-iceberg-promote.sh"
+  notify_fault "/etc/keepalived/nexus-iceberg-fence.sh"
   track_script {
     chk_pg
   }
@@ -233,6 +319,10 @@ EOS
 sudo chmod 0755 /usr/local/sbin/nexus-pg-check.sh
 echo '$promoteB64' | base64 -d | sudo tee /etc/keepalived/nexus-iceberg-promote.sh >/dev/null
 sudo chmod 0755 /etc/keepalived/nexus-iceberg-promote.sh
+echo '$reseedB64' | base64 -d | sudo tee /usr/local/sbin/nexus-iceberg-reseed.sh >/dev/null
+sudo chmod 0755 /usr/local/sbin/nexus-iceberg-reseed.sh
+echo '$fenceB64' | base64 -d | sudo tee /etc/keepalived/nexus-iceberg-fence.sh >/dev/null
+sudo chmod 0755 /etc/keepalived/nexus-iceberg-fence.sh
 echo '$kaB64' | base64 -d | sudo tee /etc/keepalived/keepalived.conf >/dev/null
 sudo systemctl enable keepalived >/dev/null 2>&1 || true
 sudo systemctl restart keepalived
@@ -284,7 +374,7 @@ echo KA_OK
       $sshUser = '${self.triggers.ssh_user}'
       $sshOpts = @('-o','ConnectTimeout=5','-o','BatchMode=yes','-o','StrictHostKeyChecking=no')
       foreach ($ip in @('192.168.70.149','192.168.70.150')) {
-        ssh @sshOpts "$sshUser@$ip" "sudo systemctl disable --now keepalived 2>/dev/null; sudo systemctl disable --now postgresql@17-main 2>/dev/null; sudo rm -f /etc/keepalived/keepalived.conf /etc/keepalived/nexus-iceberg-promote.sh /etc/postgresql/17/main/conf.d/nexus-iceberg.conf" 2>$null
+        ssh @sshOpts "$sshUser@$ip" "sudo systemctl disable --now keepalived 2>/dev/null; sudo systemctl disable --now postgresql@17-main 2>/dev/null; sudo rm -f /etc/keepalived/keepalived.conf /etc/keepalived/nexus-iceberg-promote.sh /etc/keepalived/nexus-iceberg-fence.sh /usr/local/sbin/nexus-iceberg-reseed.sh /etc/postgresql/17/main/conf.d/nexus-iceberg.conf" 2>$null
       }
       exit 0
     PWSH

@@ -6,6 +6,25 @@ lakehouse tier (`08-spark`), Phase 0.L.
 
 ## [Unreleased]
 
+### Added — 0.L.2.1 iceberg-pg catalog-DB failover fencing (2026-07-08; for nexus-cli LakehouseAdapter iceberg-pg failover)
+- **`role-overlay-iceberg-pg-replication.tf` (trigger `pg_repl_v` 1→2)** — makes a catalog-DB VRRP
+  cutover of `.151` a SAFE one-shot (it was a graceful N/A: a cutover left a split-brain + a promoted
+  standby that refused Nessie). Three changes:
+  - **`NEXUS-ICEBERG-HBA` block now written on the REPLICA too** (was primary-only). `pg_hba.conf`
+    lives in `/etc`, not `PGDATA`, so `pg_basebackup` never copied it — a *promoted* standby refused
+    the `nessie` role and the catalog crash-looped. Now both nodes admit Nessie, reloaded.
+  - **`/usr/local/sbin/nexus-iceberg-reseed.sh <src-backplane>`** installed on both nodes — a guarded
+    fence + `pg_basebackup -R` re-seed. Refuses if the node holds the VIP (never wipes a live primary),
+    if the source is not a reachable primary, or if it is already a streaming standby (idempotent).
+  - **keepalived `notify_fault` → `/etc/keepalived/nexus-iceberg-fence.sh`** — a detached best-effort
+    self-heal reseed against the peer (covers an *unattended* PG crash; the nexus-cli adapter is the
+    reliable orchestrated path).
+- **Live-applied 2026-07-08** via a targeted `terraform apply -target=null_resource.iceberg_pg_replication`
+  (1 replaced). The apply also **fixed a pre-existing split-brain** (both nodes were primary; pg-2 was
+  never re-seeded) → back to 1 primary + 1 streaming standby. Then nexus-cli drove **4 failover drills
+  both directions all GREEN** (Nessie stayed served; `GET /api/v2/trees` → 200 after each cutover).
+  See nexus-cli `docs/verification/0.L.2.1-iceberg-pg-failover-fencing.md`.
+
 ### Fixed / cold-rebuild (2026-06-25, for nexus-cli v0.8.4 LakehouseAdapter)
 - **`vmrun_path` x86 → non-x86** in `terraform/envs/lakehouse-{minio,iceberg,spark}/variables.tf` + `terraform/modules/vm/variables.tf` — the default pointed at the deleted `C:/Program Files (x86)/...` path (the VMware-relocation trap); a from-zero clone failed on it. Now `C:/Program Files/VMware/VMware Workstation/vmrun.exe`.
 - **Cold-rebuild-proven the Iceberg + Spark envs** (`lakehouse-iceberg.ps1` + `lakehouse-spark.ps1` destroy→apply→smoke; MinIO kept in place — reformatting its EC drives would wipe the cross-tier loki/tempo/harbor/starrocks buckets). Smoke 0.L.2 (28) + 0.L.3 (28) ALL PASSED; the Spark→Nessie→MinIO `s3a://warehouse` write round-trip (count=2) re-proved the cross-tier chain. This re-certed Nessie/iceberg-pg/Spark/ZooKeeper to the new Vault root (the v0.8.1-greenfield CA split) + re-seeded the iceberg-pg streaming standby.

@@ -184,9 +184,13 @@ Apply graph (per `terraform/envs/lakehouse-iceberg/main.tf`):
    / REST `cert.pem`+`key.pem`+`ca.crt`; SANs carry `iceberg-db.nexus.lab` (PG VIP)
    and `iceberg.nexus.lab` (REST round-robin).
 5. `null_resource.iceberg_pg_replication` — **connect ethernet1** → PRIMARY
-   conf.d/pg_hba/roles + `nessie` DB → REPLICA `pg_basebackup -R` hot standby →
-   keepalived (VRRP VIP `.151`, BACKUP+nopreempt, promote hook) → verify
-   `pg_stat_replication` + VIP bound.
+   conf.d/pg_hba/roles + `nessie` DB → REPLICA (the **`NEXUS-ICEBERG-HBA` block on
+   BOTH nodes** so a promoted standby admits Nessie) `pg_basebackup -R` hot standby
+   → keepalived (VRRP VIP `.151`, BACKUP+nopreempt, `notify_master` promote +
+   **`notify_fault` self-heal**) + the guarded **`nexus-iceberg-reseed.sh`** fence/
+   re-seed primitive on both nodes (0.L.2.1 fencing hardening) → verify
+   `pg_stat_replication` + VIP bound. This is what makes the nexus-cli
+   `failover-test cluster lakehouse --direction iceberg-pg` a real one-shot.
 6. `null_resource.nessie_config` — import Vault CA into the JVM truststore →
    render `nessie.env` (JDBC2 named-`postgresql` datasource → VIP `.151`) +
    `nessie.properties` (S3 urn-secret) → start both Nessie → health on `:9000`.
