@@ -7,6 +7,9 @@ this tier with no external knowledge from this document.
 > Coverage: **0.L.1 (MinIO) + 0.L.2 (Iceberg REST catalog + dedicated PG HA) —
 > complete + cold-rebuild proven.** §1.13 (Spark, 0.L.3) is added as that sub-phase
 > lands.
+>
+> **CA rollover (2026-07-04/05):** this tier is on the new Vault root — it was
+> cold-rebuilt onto the v0.8.1-greenfield Vault PKI root (see CHANGELOG).
 
 ---
 
