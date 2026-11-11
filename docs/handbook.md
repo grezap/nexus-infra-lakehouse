@@ -4,9 +4,9 @@ The from-absolute-zero rebuild guide for the lakehouse tier (`08-spark`), Phase
 0.L. Canon, not informal. An operator (or future-Greg after a break) can rebuild
 this tier with no external knowledge from this document.
 
-> Coverage: **0.L.1 (MinIO) + 0.L.2 (Iceberg REST catalog + dedicated PG HA) —
-> complete + cold-rebuild proven.** §1.13 (Spark, 0.L.3) is added as that sub-phase
-> lands.
+> Coverage: **0.L.1 (MinIO) + 0.L.2 (Iceberg REST catalog + dedicated PG HA) + 0.L.3
+> (Spark standalone HA — 2 ZooKeeper-elected masters + 3 workers + a dedicated 3-node
+> ZooKeeper ensemble) — all complete + cold-rebuild proven (ADRs 0033-0035).**
 >
 > **CA rollover (2026-07-04/05):** this tier is on the new Vault root — it was
 > cold-rebuilt onto the v0.8.1-greenfield Vault PKI root (see CHANGELOG).
@@ -30,8 +30,9 @@ key configured for bare `ssh nexusadmin@<ip>` (see nexus-infra-vmware handbook �
 
 **Cross-repo state this tier reads (provisioned by `nexus-infra-vmware`):**
 
-- **foundation env** — dhcp-host reservations for the 11 lakehouse MACs
-  (`:99`–`:A3` → `.140`–`.150`) + the catalog VIP (`:A?` → `.151`) + round-robin
+- **foundation env** — dhcp-host reservations for the 16 lakehouse MACs
+  (`:99`–`:A3` → `.140`–`.150` for 0.L.1/0.L.2; `:AA`–`:AE` → `.153`–`.157` for the
+  0.L.3 Spark-HA + ZooKeeper nodes) + the catalog VIP (→ `.151`) + round-robin
   DNS `minio.nexus.lab`, `iceberg.nexus.lab` (→ `.147`/`.148`), and
   `iceberg-db.nexus.lab` (→ VIP `.151`) —
   `role-overlay-gateway-lakehouse-{reservations,dns}.tf`.

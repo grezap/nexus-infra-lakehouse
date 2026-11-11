@@ -3,7 +3,7 @@
 NexusPlatform **lakehouse tier** (`08-spark`) — Phase 0.L. Object storage, table
 format, and compute for the medallion lakehouse: **MinIO** (S3-compatible,
 distributed erasure-coded) + **Apache Iceberg** (REST catalog on a dedicated HA
-Postgres) + **Apache Spark** (master + 2 workers). Part of the
+Postgres) + **Apache Spark** (HA: 2 ZooKeeper-elected masters + 3 workers). Part of the
 [NexusPlatform](https://github.com/grezap) portfolio; built on the per-cluster
 Terraform state + per-engine Packer template canon.
 
@@ -23,7 +23,9 @@ Terraform state + per-engine Packer template canon.
 |---|---|---|---|---|
 | **0.L.1** | MinIO distributed EC | 4 (minio-1..4) | .141–.144 | buckets created · 4 online drives · object round-trip · node-loss tolerant |
 | 0.L.2 | Iceberg REST catalog + dedicated PG HA | 2 REST + 2 PG (+VIP) | .147–.151 | namespace/table via REST · metadata in PG · warehouse in MinIO |
-| 0.L.3 | Apache Spark | 1 master + 2 workers | .140/.145/.146 | Spark job writes Iceberg table to MinIO · snapshot/time-travel query |
+| 0.L.3 | Apache Spark HA + ZooKeeper | 2 masters + 3 workers + 3 ZK (8) | .140·.153 / .145·.146·.154 / .155–.157 | Spark job writes Iceberg table to MinIO · snapshot/time-travel query · ZK-elected master failover |
+
+**Tier total: 16 VMs + 1 VIP** (4 MinIO + 2 Iceberg REST + 2 Iceberg PG + 2 Spark masters + 3 Spark workers + 3 ZooKeeper; catalog-DB VRRP VIP `.151`).
 
 ## Architecture (0.L.1 — MinIO)
 
@@ -43,8 +45,9 @@ Terraform state + per-engine Packer template canon.
 
 ## Cross-tier prerequisites (run in `nexus-infra-vmware` FIRST)
 
-1. **foundation** env apply — dhcp-host reservations for the 11 lakehouse MACs
-   (`:99`–`:A3`) + round-robin DNS `minio.nexus.lab`.
+1. **foundation** env apply — dhcp-host reservations for the 16 lakehouse MACs
+   (`:99`–`:A3` for 0.L.1/0.L.2 + `:AA`–`:AE` for the 0.L.3 Spark-HA + ZooKeeper nodes)
+   + round-robin DNS `minio.nexus.lab` / `iceberg.nexus.lab` + the catalog VIP `.151`.
 2. **security** env apply — `minio-server` PKI role + 4 per-host AppRole sidecars
    + KV sticky-seeds at `nexus/lakehouse/minio/*`.
 
@@ -66,20 +69,30 @@ pwsh -File scripts\lakehouse-minio.ps1 apply
 pwsh -File scripts\smoke-0.L.1.ps1
 ```
 
+After 0.L.1, bring up 0.L.2 then 0.L.3 the same way — `pwsh -File scripts\lakehouse-iceberg.ps1 apply` + `smoke-0.L.2.ps1`, then `pwsh -File scripts\lakehouse-spark.ps1 apply` + `smoke-0.L.3.ps1` (full from-zero order in `docs/handbook.md`).
+
 Selective ops: every node + overlay has an `enable_*` toggle (see
 `docs/handbook.md` §1.5).
 
 ## Repo layout
 
 ```
-packer/_shared/ansible/roles/   shared roles (incl. lakehouse_firstboot)
-packer/lakehouse-minio-node/    MinIO per-engine template
-terraform/modules/vm/           reusable vmrun clone driver
-terraform/envs/lakehouse-minio/ MinIO per-cluster state + 5 overlays
-scripts/lakehouse-minio.ps1     operator wrapper (apply/destroy/smoke/cycle)
-scripts/smoke-0.L.1.ps1         MinIO exit-gate smoke
-docs/handbook.md                from-zero rebuild guide + runbooks
-docs/adr/                       repo-local ADR index (shared ADRs in nexus-platform-plan)
+packer/_shared/ansible/roles/       shared roles (incl. lakehouse_firstboot)
+packer/lakehouse-minio-node/        MinIO per-engine template (0.L.1)
+packer/lakehouse-iceberg-rest-node/ Iceberg/Nessie REST catalog template (0.L.2)
+packer/lakehouse-iceberg-pg-node/   Iceberg catalog PostgreSQL HA template (0.L.2)
+packer/lakehouse-spark-node/        Spark master/worker template (0.L.3)
+packer/lakehouse-zookeeper-node/    ZooKeeper ensemble template (0.L.3)
+terraform/modules/vm/               reusable vmrun clone driver
+terraform/envs/lakehouse-minio/     MinIO per-cluster state + overlays (0.L.1)
+terraform/envs/lakehouse-iceberg/   Iceberg REST + PG HA per-cluster state (0.L.2)
+terraform/envs/lakehouse-spark/     Spark HA + ZooKeeper per-cluster state (0.L.3)
+scripts/lakehouse-minio.ps1         MinIO operator wrapper (apply/destroy/smoke/cycle)
+scripts/lakehouse-iceberg.ps1       Iceberg operator wrapper (0.L.2)
+scripts/lakehouse-spark.ps1         Spark + ZooKeeper operator wrapper (0.L.3)
+scripts/smoke-0.L.{1,2,3}.ps1       per-sub-phase exit-gate smokes
+docs/handbook.md                    from-zero rebuild guide + runbooks
+docs/adr/                           repo-local ADR index (shared ADRs in nexus-platform-plan)
 ```
 
 ## Links
